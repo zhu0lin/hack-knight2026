@@ -1,8 +1,8 @@
 # Vital Verdict
 
-An Among Us-inspired social deduction game where your heart gives you away. Each player's webcam measures their pulse live using the [Presage SmartSpectra SDK](https://smartspectra.presagetech.com/docs/), and everyone sees everyone's heart rate during emergency meetings.
+An Among Us-inspired social deduction game where your heart and facial expressions gives you away. Each player's webcam measures their pulse live using the [Presage SmartSpectra SDK](https://smartspectra.presagetech.com/docs/), and everyone sees everyone's heart rate during emergency meetings.
 
-Everything runs locally: one laptop hosts, the others join over the same Wi-Fi. Nothing is deployed.
+Everything runs locally: one laptop hosts, the others join over the same Wi-Fi. 
 
 ## How it works
 
@@ -82,25 +82,6 @@ $env:VV_SIM=1; $env:VV_PROFILE=2; npm start   # window 2: simulated, join "local
 - Sit still. Talking and big movements reduce accuracy. Pulse is a ~12 second average, so reactions show up after a few seconds.
 - No flickering light sources (TVs, some LEDs) on your face.
 - The yellow hint over the camera preview tells you what to fix (too dark, face not centered, multiple faces, and so on).
-
-## Demo script (3 players, ~5 minutes)
-
-**Setup before judges arrive:** 3 laptops on the same Wi-Fi, each with `.env` configured, a lamp in front of each player. Practice once.
-
-1. **Pitch (30s).** "This is Among Us, except you can't hide your heartbeat. Each webcam reads the player's pulse with no wearables."
-2. **Lobby (30s).** Host clicks **Host game**; the other two join with the IP shown. Point out the live BPM on the left and the **Vitals locked** resting rate. Host clicks **Start game**.
-3. **Roles (5s).** Each player privately sees CREW or THE IMPOSTOR.
-4. **Tasks (30-45s).** Show the task bar filling. Do **Calm the reactor** to show a task driven by heart rate. The impostor eliminates one player, or a crewmate calls an **Emergency meeting**.
-5. **Meeting (the main moment, 90s).** Show all heart-rate cards beating at each player's real rate. One player clicks **Accuse** on another; the accused card gets the ACCUSED tag. Ask the accused to defend themselves out loud; as their pulse climbs, the card turns red and a beep plays.
-6. **Twist (30s).** The impostor clicks **Fake calm vitals**: their card now shows a steady resting rate. Explain that players must decide whether a too-steady number is real.
-7. **Vote and reveal (30s).** Host clicks **Start voting**, everyone votes, and the reveal shows whether the impostor was caught.
-8. **Close (15s).** "All heart-rate processing runs on each laptop; only the numbers are shared over the local network."
-
-**Backup plans:**
-
-- **Only one laptop:** host, click **+ Add bot** twice, start the game. Bots have simulated heart rates that spike when accused (impostor bots spike harder).
-- **Readings are unstable:** switch that laptop to `npm run sim` and hold `S` to show a spike on cue.
-- **No internet for key validation:** run every laptop with `npm run sim`; the game still works over the local network.
 
 ## Project layout
 
