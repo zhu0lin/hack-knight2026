@@ -404,6 +404,14 @@ class Game {
     this.emit({ type: 'lobby', text: 'Back to the lobby' });
   }
 
+  // Drops whatever match is running so a new group can join. Used by the debug button.
+  abandonGame() {
+    this.players.clear();
+    this.hostId = null;
+    this.resetRound();
+    this.emit({ type: 'lobby', text: 'Debug reset. The game was ended.' });
+  }
+
   // ---- ticking ------------------------------------------------------------
 
   tick(now = this.clock()) {
@@ -620,6 +628,14 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
       }
       const playerId = sockets.get(ws);
       try {
+        if (msg.type === 'abandon_game') {
+          log(`[vital-verdict] debug reset from ${remote}`);
+          game.abandonGame();
+          for (const sock of [...sockets.keys()]) sockets.delete(sock);
+          send(ws, { type: 'reset' });
+          broadcastState();
+          return;
+        }
         if (msg.type === 'join') {
           log(`[vital-verdict] join request from ${remote} name="${msg.name || ''}"`);
           const player = game.addPlayer({ clientId: msg.clientId, name: msg.name });

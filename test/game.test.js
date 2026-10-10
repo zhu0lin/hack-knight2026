@@ -264,6 +264,42 @@ test('health check responds ok for Cloud Run', async () => {
   server.close();
 });
 
+test('abandon_game ends a match so a new player can join', async () => {
+  const port = 17779;
+  const server = createGameServer({ port, log: () => {} });
+  await server.ready;
+  const host = server.game.addPlayer({ clientId: 'h', name: 'Host' });
+  server.game.addBot();
+  server.game.addBot();
+  server.game.start(host.id);
+  assert.notStrictEqual(server.game.phase, 'lobby');
+
+  const messages = [];
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  await new Promise((resolve, reject) => {
+    ws.on('error', reject);
+    ws.on('open', resolve);
+  });
+  ws.on('message', (raw) => messages.push(JSON.parse(raw)));
+  ws.send(JSON.stringify({ type: 'join', name: 'New', clientId: 'new' }));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.strictEqual(messages.some((m) => m.type === 'error' && m.message === 'Game already in progress'), true);
+
+  ws.send(JSON.stringify({ type: 'abandon_game' }));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.strictEqual(server.game.phase, 'lobby');
+  assert.strictEqual(server.game.players.size, 0);
+  assert.strictEqual(messages.some((m) => m.type === 'reset'), true);
+
+  ws.send(JSON.stringify({ type: 'join', name: 'New', clientId: 'new' }));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.strictEqual(messages.some((m) => m.type === 'welcome'), true);
+  assert.strictEqual(server.game.players.size, 1);
+
+  ws.close();
+  server.close();
+});
+
 test('join addresses become the right websocket URL', () => {
   assert.strictEqual(gameSocketUrl('192.168.1.20', 7777), 'ws://192.168.1.20:7777');
   assert.strictEqual(gameSocketUrl('192.168.1.20:7777', 7777), 'ws://192.168.1.20:7777');

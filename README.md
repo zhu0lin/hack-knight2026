@@ -105,8 +105,9 @@ The ship has nine rooms: Mess Hall, Medbay, Lab, Hub, Reactor, Navigation, Elect
 
 ```
 src/main/        Electron main process + preload (SDK bridge, host game server)
-src/server/      WebSocket game server (state machine, bots, vitals relay)
-src/renderer/    UI: vitals.js (SmartSpectra + simulator), app.js (screens), net.js, sound.js
+src/server/      WebSocket game server (state machine, positions, bots, vitals relay)
+src/shared/      map.js: rooms, corridors, collision, task stations, bot waypoints (used by server and client)
+src/renderer/    UI: vitals.js (SmartSpectra + simulator), app.js (screens), map-view.js (canvas map + WASD), net.js, sound.js
 src/socket-url.js  turns a typed IP or Cloud Run URL into a websocket address
 Dockerfile       game server only, for Cloud Run
 test/            node:test suite

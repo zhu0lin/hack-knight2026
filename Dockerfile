@@ -3,6 +3,7 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY src/server ./src/server
+COPY src/shared ./src/shared
 RUN npm install --omit=dev ws@8.22.0 && chown -R node:node /app
 
 ENV PORT=8080

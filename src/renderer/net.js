@@ -1,4 +1,3 @@
-export function connect(url, { onState, onPositions, onEvent, onError, onStatus }) {
 const CONNECT_TIMEOUT_MS = 8000;
 
 function closeMeaning(code) {
@@ -9,7 +8,7 @@ function closeMeaning(code) {
   return '';
 }
 
-export function connect(url, { onState, onEvent, onError, onStatus, onLog = () => {} }) {
+export function connect(url, { onState, onPositions, onEvent, onError, onStatus, onReset, onLog = () => {} }) {
   let ws = null;
   let closedByUser = false;
   let joinMsg = null;
@@ -68,12 +67,6 @@ export function connect(url, { onState, onEvent, onError, onStatus, onLog = () =
         onError(`Could not send join: ${err.message}`);
       }
     };
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'state') onState(msg.state);
-      else if (msg.type === 'positions') onPositions(msg.positions);
-      else if (msg.type === 'event') onEvent(msg.event);
-      else if (msg.type === 'error') onError(msg.message);
     socket.onmessage = (e) => {
       let msg;
       try {
@@ -84,6 +77,9 @@ export function connect(url, { onState, onEvent, onError, onStatus, onLog = () =
       }
       if (msg.type === 'welcome') {
         log(`host accepted join, player id ${msg.playerId}`);
+      } else if (msg.type === 'reset') {
+        log('server ended the game in progress');
+        if (onReset) onReset();
       } else if (msg.type === 'state') {
         if (!gotState) {
           gotState = true;
@@ -92,6 +88,8 @@ export function connect(url, { onState, onEvent, onError, onStatus, onLog = () =
           log(`received game state (phase=${msg.state && msg.state.phase}, players=${count})`);
         }
         onState(msg.state);
+      } else if (msg.type === 'positions') {
+        if (onPositions) onPositions(msg.positions);
       } else if (msg.type === 'event') {
         onEvent(msg.event);
       } else if (msg.type === 'error') {

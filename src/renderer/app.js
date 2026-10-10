@@ -137,9 +137,15 @@ function pushJoinLog(message) {
 function joinServer(url, name) {
   if (ui.net) ui.net.close();
   ui.state = null;
+  ui.joinName = name;
   pushJoinLog(`join requested by "${name}" → ${url}`);
   ui.net = connect(url, {
     onLog: pushJoinLog,
+    onReset: () => {
+      toast('Ended the game. Joining the lobby...', 'info');
+      ui.state = null;
+      ui.net.join(ui.joinName, clientId);
+    },
     onStatus: (status) => {
       ui.connection = status;
       if (status === 'disconnected' && ui.state) toast('Lost connection to host, retrying...', 'warn');
@@ -262,6 +268,7 @@ function render() {
     main.innerHTML = `<div class="center"><div class="panel"><h2>Connecting to host...</h2>
       <p class="muted">${esc(ui.connection)}</p>
       ${ui.joinLog.length ? `<div class="log">${ui.joinLog.map((line) => `<div>${esc(line)}</div>`).join('')}</div>` : ''}
+      <button class="btn ghost" data-action="abandon_game">End game in progress</button>
       </div></div>`;
     return;
   }
@@ -316,6 +323,7 @@ function setupView() {
             <input id="host-addr" placeholder="IP, or https://….run.app" value="${esc(localStorage.getItem('vv-host') || '')}" />
             <p class="muted">Same Wi-Fi: their IP. Campus: the Cloud Run URL.</p>
             <button id="join" class="btn">Join game</button>
+            <button id="reset-game" class="btn ghost">End game in progress</button>
           </div>
         </div>
         ${ui.config.missingKey ? '<p class="warn-box">No <code>PRESAGE_API_KEY</code> found in <code>.env</code>. Running with simulated vitals.</p>' : ''}
@@ -352,6 +360,33 @@ function setupView() {
     joinServer(url, name);
     render();
   };
+  $('#reset-game').onclick = () => endGameInProgress(nameInput.value.trim());
+}
+
+function endGameInProgress(name) {
+  const addr = ($('#host-addr') && $('#host-addr').value.trim()) || localStorage.getItem('vv-host') || '';
+  if (!addr) { toast('Enter the server address first', 'warn'); return; }
+  const url = gameSocketUrl(addr, ui.config.port);
+  if (ui.net) {
+    ui.joinName = name || ui.joinName;
+    ui.net.send('abandon_game');
+    return;
+  }
+  const ws = new WebSocket(url);
+  const timer = setTimeout(() => { ws.close(); toast('Server did not answer the reset', 'warn'); }, 8000);
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'abandon_game' }));
+  ws.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type !== 'reset') return;
+    clearTimeout(timer);
+    ws.close();
+    toast('Ended the game on the server.', 'info');
+    if (!name) return;
+    localStorage.setItem('vv-name', name);
+    joinServer(url, name);
+  };
+  ws.onerror = () => {};
 }
 
 function isHost() { return ui.state.me && ui.state.hostId === ui.state.me.id; }
