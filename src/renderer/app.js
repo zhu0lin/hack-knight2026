@@ -1,4 +1,4 @@
-import { createVitals } from './vitals.js';
+import { createVitals, listCameras } from './vitals.js';
 import { connect } from './net.js';
 import * as sound from './sound.js';
 
@@ -510,6 +510,24 @@ main.addEventListener('click', (e) => {
   else if (vote) ui.net.send('vote', { targetId: vote });
 });
 
+// ---- camera selection --------------------------------------------------------
+
+async function populateCameraList() {
+  let cams;
+  try {
+    cams = await listCameras();
+  } catch {
+    return;
+  }
+  const select = $('#cam-select');
+  const saved = localStorage.getItem('vv-camera') || '';
+  select.innerHTML = cams
+    .map((d, i) => `<option value="${esc(d.deviceId)}">${esc(d.label || `Camera ${i + 1}`)}</option>`)
+    .join('');
+  $('#cam-select-wrap').classList.toggle('hidden', cams.length < 2);
+  if (saved && cams.some((d) => d.deviceId === saved)) select.value = saved;
+}
+
 // ---- boot -------------------------------------------------------------------
 
 async function boot() {
@@ -520,7 +538,17 @@ async function boot() {
   }
   ui.vitals = createVitals({ apiKey: ui.config.apiKey, sim: ui.config.sim, onChange: renderVitalsPanel });
   $('#recalibrate').onclick = () => ui.vitals.recalibrate();
-  ui.vitals.start($('#cam'));
+
+  const savedCamera = localStorage.getItem('vv-camera') || undefined;
+  await ui.vitals.start($('#cam'), savedCamera);
+  await populateCameraList();
+  navigator.mediaDevices.addEventListener('devicechange', populateCameraList);
+  $('#cam-select').onchange = (e) => {
+    const deviceId = e.target.value;
+    if (!deviceId) return;
+    localStorage.setItem('vv-camera', deviceId);
+    ui.vitals.setDevice(deviceId);
+  };
 
   setInterval(sendVitals, 1000);
   setInterval(() => {

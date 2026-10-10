@@ -95,38 +95,62 @@ class PresageSource {
       apiKey,
       requestedMetrics: [MetricType.PULSE_RATE],
     });
+    this.bound = false;
+    this.ownedStream = null;
   }
 
-  async start(videoEl) {
+  async start(videoEl, deviceId) {
     const { sdk, tracker } = this;
-    sdk.on('streamAvailable', (stream) => {
-      videoEl.srcObject = stream;
-    });
-    sdk.on('processingStatus', (status) => {
-      const names = ['uninitialized', 'idle', 'starting', 'running', 'stopping', 'error'];
-      tracker.update({ status: names[status] || String(status) });
-    });
-    sdk.on('validationStatus', (code, _ts, hint) => {
-      tracker.update({
-        validationOk: code === ValidationCode.kOk,
-        hint: hintFor(code, hint),
+    if (!this.bound) {
+      this.bound = true;
+      sdk.on('streamAvailable', (stream) => {
+        videoEl.srcObject = stream;
       });
-    });
-    sdk.on('metrics', (buf) => {
-      const metrics = decodeMetrics(buf);
-      const pulse = metrics.cardio?.pulseRate?.at(-1);
-      if (pulse && pulse.value > 0) {
-        tracker.pushPulse(Math.round(pulse.value), pulse.confidence, pulse.stable);
-      }
-    });
-    sdk.on('error', (code, message) => {
-      tracker.update({ status: 'error', error: `SmartSpectra error ${code}: ${message}` });
-    });
+      sdk.on('processingStatus', (status) => {
+        const names = ['uninitialized', 'idle', 'starting', 'running', 'stopping', 'error'];
+        tracker.update({ status: names[status] || String(status) });
+      });
+      sdk.on('validationStatus', (code, _ts, hint) => {
+        tracker.update({
+          validationOk: code === ValidationCode.kOk,
+          hint: hintFor(code, hint),
+        });
+      });
+      sdk.on('metrics', (buf) => {
+        const metrics = decodeMetrics(buf);
+        const pulse = metrics.cardio?.pulseRate?.at(-1);
+        if (pulse && pulse.value > 0) {
+          tracker.pushPulse(Math.round(pulse.value), pulse.confidence, pulse.stable);
+        }
+      });
+      sdk.on('error', (code, message) => {
+        tracker.update({ status: 'error', error: `SmartSpectra error ${code}: ${message}` });
+      });
+    }
+    if (deviceId) {
+      this.ownedStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId }, width: 1280, height: 720 },
+      });
+      videoEl.srcObject = this.ownedStream;
+      sdk.useMediaStream(this.ownedStream);
+    }
     tracker.update({ status: 'starting', hint: 'Camera tuning... hold still' });
     try {
       await sdk.start();
     } catch (err) {
       tracker.update({ status: 'error', error: err.message || String(err) });
+    }
+  }
+
+  async stop() {
+    try {
+      await this.sdk.stop();
+    } catch {
+      // ignore - we're about to re-acquire a device anyway
+    }
+    if (this.ownedStream) {
+      this.ownedStream.getTracks().forEach((t) => t.stop());
+      this.ownedStream = null;
     }
   }
 }
@@ -142,23 +166,41 @@ class SimulatedSource {
     this.bpm = this.resting;
     this.stress = 0;
     this.stressHeld = false;
+    this.bound = false;
+    this.timer = null;
+    this.stream = null;
   }
 
-  async start(videoEl) {
-    navigator.mediaDevices
-      .getUserMedia({ video: { width: 640, height: 360 } })
-      .then((stream) => { videoEl.srcObject = stream; })
-      .catch(() => {});
+  async start(videoEl, deviceId) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: deviceId ? { deviceId: { exact: deviceId }, width: 640, height: 360 } : { width: 640, height: 360 },
+      });
+      this.stream = stream;
+      videoEl.srcObject = stream;
+    } catch {
+      // no camera available - vitals stay simulated regardless
+    }
 
-    window.addEventListener('keydown', (e) => {
-      if (e.key.toLowerCase() === 's' && !isTyping(e)) this.stressHeld = true;
-    });
-    window.addEventListener('keyup', (e) => {
-      if (e.key.toLowerCase() === 's') this.stressHeld = false;
-    });
+    if (!this.bound) {
+      this.bound = true;
+      window.addEventListener('keydown', (e) => {
+        if (e.key.toLowerCase() === 's' && !isTyping(e)) this.stressHeld = true;
+      });
+      window.addEventListener('keyup', (e) => {
+        if (e.key.toLowerCase() === 's') this.stressHeld = false;
+      });
+    }
 
     this.tracker.update({ status: 'running', validationOk: true, hint: null });
-    setInterval(() => this.tick(), 1000);
+    if (!this.timer) this.timer = setInterval(() => this.tick(), 1000);
+  }
+
+  stop() {
+    if (this.stream) {
+      this.stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+    }
   }
 
   tick() {
@@ -174,11 +216,30 @@ function isTyping(e) {
   return tag === 'INPUT' || tag === 'TEXTAREA';
 }
 
+export async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((d) => d.kind === 'videoinput');
+}
+
 export function createVitals({ apiKey, sim, onChange }) {
   const tracker = new VitalsTracker(onChange);
   const source = sim ? new SimulatedSource(tracker) : new PresageSource(apiKey, tracker);
+  let videoEl = null;
+
+  async function start(el, deviceId) {
+    videoEl = el;
+    await source.start(videoEl, deviceId);
+  }
+
+  async function setDevice(deviceId) {
+    await source.stop();
+    tracker.recalibrate();
+    await source.start(videoEl, deviceId);
+  }
+
   return {
-    start: (videoEl) => source.start(videoEl),
+    start,
+    setDevice,
     recalibrate: () => tracker.recalibrate(),
     get state() { return { ...tracker.state }; },
   };
