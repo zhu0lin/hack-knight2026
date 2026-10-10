@@ -1,5 +1,6 @@
 import { createVitals } from './vitals.js';
 import { connect } from './net.js';
+import { gameSocketUrl } from '../socket-url.js';
 import * as sound from './sound.js';
 
 const HOLD_TASK_MS = 2500;
@@ -16,6 +17,7 @@ const ui = {
   myVitals: null,
   net: null,
   connection: 'offline',
+  joinLog: [],
   hostInfo: null,
   state: null,
   clockOffset: 0,
@@ -121,9 +123,20 @@ function toast(text, kind = 'info') {
 
 // ---- networking -------------------------------------------------------------
 
+function pushJoinLog(message) {
+  const stamp = new Date().toLocaleTimeString();
+  ui.joinLog = [...ui.joinLog.slice(-7), `${stamp}  ${message}`];
+  console.log(`[join] ${message}`);
+  if (window.vv && window.vv.log) window.vv.log(`[join] ${message}`);
+  if (!ui.state) render();
+}
+
 function joinServer(url, name) {
   if (ui.net) ui.net.close();
+  ui.state = null;
+  pushJoinLog(`join requested by "${name}" → ${url}`);
   ui.net = connect(url, {
+    onLog: pushJoinLog,
     onStatus: (status) => {
       ui.connection = status;
       if (status === 'disconnected' && ui.state) toast('Lost connection to host, retrying...', 'warn');
@@ -234,7 +247,9 @@ function render() {
   if (!ui.net || !ui.state) {
     if (!ui.net) return;
     main.innerHTML = `<div class="center"><div class="panel"><h2>Connecting to host...</h2>
-      <p class="muted">${esc(ui.connection)}</p></div></div>`;
+      <p class="muted">${esc(ui.connection)}</p>
+      ${ui.joinLog.length ? `<div class="log">${ui.joinLog.map((line) => `<div>${esc(line)}</div>`).join('')}</div>` : ''}
+      </div></div>`;
     return;
   }
   const views = { lobby: lobbyView, roles: rolesView, tasks: tasksView, discussion: meetingView, voting: meetingView, reveal: revealView, gameover: gameoverView };
@@ -257,7 +272,8 @@ function setupView() {
           </div>
           <div class="setup-col">
             <h3>Join a friend</h3>
-            <input id="host-addr" placeholder="Host IP, e.g. 192.168.1.20" value="${esc(localStorage.getItem('vv-host') || '')}" />
+            <input id="host-addr" placeholder="IP, or https://….run.app" value="${esc(localStorage.getItem('vv-host') || '')}" />
+            <p class="muted">Same Wi-Fi: their IP. Campus: the Cloud Run URL.</p>
             <button id="join" class="btn">Join game</button>
           </div>
         </div>
@@ -288,9 +304,11 @@ function setupView() {
     const name = getName();
     if (!name) return;
     const addr = $('#host-addr').value.trim();
-    if (!addr) { toast('Enter the host IP address', 'warn'); return; }
+    if (!addr) { toast('Enter the host IP or server address', 'warn'); return; }
     localStorage.setItem('vv-host', addr);
-    joinServer(`ws://${addr.includes(':') ? addr : `${addr}:${ui.config.port}`}`, name);
+    const url = gameSocketUrl(addr, ui.config.port);
+    pushJoinLog(`typed host "${addr}", dialing ${url}`);
+    joinServer(url, name);
     render();
   };
 }

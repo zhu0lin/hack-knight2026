@@ -2,7 +2,7 @@
 
 An Among Us-inspired social deduction game where your heart and facial expressions gives you away. Each player's webcam measures their pulse live using the [Presage SmartSpectra SDK](https://smartspectra.presagetech.com/docs/), and everyone sees everyone's heart rate during emergency meetings.
 
-Everything runs locally: one laptop hosts, the others join over the same Wi-Fi. 
+On a normal Wi-Fi network, one laptop hosts and the others join it. On a campus network that blocks laptop-to-laptop traffic, everyone joins the shared Cloud Run server instead. 
 
 ## How it works
 
@@ -47,6 +47,22 @@ npm test       # game logic + LAN relay tests
 2. **Other laptops:** enter a name, type the host's IP, click **Join game**.
 3. Wait for **Vitals locked** on each laptop, then the host clicks **Start game**. At least 3 players are needed; the host can add bots to fill seats.
 
+## Shared server (campus Wi-Fi)
+
+The server for this event is already running at <https://vital-verdict-120242246392.us-east1.run.app>.
+
+Each player still runs the app on their own laptop. Nobody clicks **Host game**.
+
+```bash
+npm install
+cp .env.example .env   # paste your own PRESAGE_API_KEY
+npm start
+```
+
+Enter a name, paste the URL above into **Join a friend**, and click **Join game**. The first person in the lobby is the host and can add a bot, then start once vitals are locked.
+
+No Docker, gcloud, or `VV_PORT` change is required to join. `.env` stays on your machine and is not in git. Shut the Cloud Run service down after the event so the always-on instance does not keep billing.
+
 To test two windows on one laptop (only one can use the camera):
 
 ```bash
@@ -75,8 +91,10 @@ VV_SIM=1 VV_PROFILE=2 npm start           # window 2: simulated, join "localhost
 
 ```
 src/main/        Electron main process + preload (SDK bridge, host game server)
-src/server/      LAN WebSocket game server (state machine, bots, vitals relay)
+src/server/      WebSocket game server (state machine, bots, vitals relay)
 src/renderer/    UI: vitals.js (SmartSpectra + simulator), app.js (screens), net.js, sound.js
+src/socket-url.js  turns a typed IP or Cloud Run URL into a websocket address
+Dockerfile       game server only, for Cloud Run
 test/            node:test suite
 ```
 

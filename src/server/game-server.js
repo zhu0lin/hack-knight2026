@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const http = require('http');
 const { WebSocketServer } = require('ws');
 
 const DEFAULT_CONFIG = {
@@ -475,7 +476,16 @@ class Game {
 
 function createGameServer({ port = 7777, config = {}, log = console.log } = {}) {
   const game = new Game(config);
-  const wss = new WebSocketServer({ port });
+  const httpServer = http.createServer((req, res) => {
+    if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('ok');
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  const wss = new WebSocketServer({ server: httpServer });
   const sockets = new Map();
 
   const send = (ws, msg) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); };
@@ -492,20 +502,31 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
     broadcastState();
   });
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    const remote = (req && req.socket && req.socket.remoteAddress) || 'unknown';
+    log(`[vital-verdict] connection from ${remote}`);
     ws.on('message', (raw) => {
       let msg;
-      try { msg = JSON.parse(raw); } catch { return; }
+      try { msg = JSON.parse(raw); } catch (err) {
+        const preview = String(raw).slice(0, 80);
+        log(`[vital-verdict] bad message from ${remote}: ${err.message} (${preview})`);
+        return;
+      }
       const playerId = sockets.get(ws);
       try {
         if (msg.type === 'join') {
+          log(`[vital-verdict] join request from ${remote} name="${msg.name || ''}"`);
           const player = game.addPlayer({ clientId: msg.clientId, name: msg.name });
           sockets.set(ws, player.id);
+          log(`[vital-verdict] ${player.name} joined as ${player.id} from ${remote}`);
           send(ws, { type: 'welcome', playerId: player.id });
           broadcastState();
           return;
         }
-        if (!playerId) return;
+        if (!playerId) {
+          log(`[vital-verdict] ignored "${msg.type}" from ${remote} before they joined`);
+          return;
+        }
         switch (msg.type) {
           case 'hr_update': game.updateVitals(playerId, msg.vitals || {}); return;
           case 'start_game': game.start(playerId); break;
@@ -519,19 +540,32 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
           case 'vote': game.vote(playerId, msg.targetId); break;
           case 'skip_phase': game.skipPhase(playerId); break;
           case 'play_again': game.playAgain(playerId); break;
-          default: return;
+          default:
+            log(`[vital-verdict] unknown message "${msg.type}" from ${remote}`);
+            return;
         }
         broadcastState();
       } catch (err) {
+        log(`[vital-verdict] ${msg.type} from ${remote} failed: ${err.message}`);
         send(ws, { type: 'error', message: err.message });
       }
     });
-    ws.on('close', () => {
+    ws.on('error', (err) => {
+      log(`[vital-verdict] socket error from ${remote}: ${err.message}`);
+    });
+    ws.on('close', (code, reason) => {
       const playerId = sockets.get(ws);
+      const why = reason && reason.length ? ` reason="${reason}"` : '';
+      log(`[vital-verdict] disconnect from ${remote} code=${code} player=${playerId || 'none'}${why}`);
       sockets.delete(ws);
       if (playerId) game.removePlayer(playerId);
       broadcastState();
     });
+  });
+
+  wss.on('wsClientError', (err, _socket, request) => {
+    const remote = (request && request.socket && request.socket.remoteAddress) || 'unknown';
+    log(`[vital-verdict] handshake failed from ${remote}: ${err.message}`);
   });
 
   const timer = setInterval(() => {
@@ -539,10 +573,20 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
     broadcastState();
   }, 1000);
 
-  const ready = new Promise((resolve, reject) => {
-    wss.once('listening', () => { log(`[vital-verdict] game server listening on :${port}`); resolve(); });
-    wss.once('error', reject);
+  httpServer.on('error', (err) => {
+    log(`[vital-verdict] server error on :${port}: ${err.code ? `${err.code} ` : ''}${err.message}`);
   });
+
+  const ready = new Promise((resolve, reject) => {
+    httpServer.once('listening', () => {
+      const addr = httpServer.address();
+      log(`[vital-verdict] game server listening on ${addr.address}:${addr.port}`);
+      resolve();
+    });
+    httpServer.once('error', reject);
+  });
+
+  httpServer.listen(port, '0.0.0.0');
 
   return {
     game,
@@ -551,6 +595,7 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
       clearInterval(timer);
       for (const ws of sockets.keys()) ws.terminate();
       wss.close();
+      httpServer.close();
     },
   };
 }
