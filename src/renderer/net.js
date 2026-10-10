@@ -1,3 +1,4 @@
+export function connect(url, { onState, onPositions, onEvent, onError, onStatus }) {
 const CONNECT_TIMEOUT_MS = 8000;
 
 function closeMeaning(code) {
@@ -67,6 +68,12 @@ export function connect(url, { onState, onEvent, onError, onStatus, onLog = () =
         onError(`Could not send join: ${err.message}`);
       }
     };
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'state') onState(msg.state);
+      else if (msg.type === 'positions') onPositions(msg.positions);
+      else if (msg.type === 'event') onEvent(msg.event);
+      else if (msg.type === 'error') onError(msg.message);
     socket.onmessage = (e) => {
       let msg;
       try {
