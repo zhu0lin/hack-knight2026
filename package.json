@@ -1,0 +1,23 @@
+{
+  "name": "vital-verdict",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Among Us-inspired social deduction game with live camera heart rate (Presage SmartSpectra).",
+  "main": "src/main/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "esbuild src/renderer/app.js --bundle --platform=browser --format=iife --target=chrome130 --outfile=dist/renderer.js",
+    "start": "npm run build && env -u ELECTRON_RUN_AS_NODE electron .",
+    "sim": "npm run build && VV_SIM=1 env -u ELECTRON_RUN_AS_NODE electron .",
+    "host": "node src/server/cli.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@smartspectra/node-sdk": "^3.4.0",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "esbuild": "^0.28.2"
+  }
+}
