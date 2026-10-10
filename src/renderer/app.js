@@ -1,6 +1,9 @@
 import { createVitals, listCameras } from './vitals.js';
 import { connect } from './net.js';
+import { gameSocketUrl } from '../socket-url.js';
 import * as sound from './sound.js';
+import { createMapView } from './map-view.js';
+import { roomAt } from '../shared/map.js';
 
 const HOLD_TASK_MS = 2500;
 const CALM_TASK_MS = 6000;
@@ -16,12 +19,14 @@ const ui = {
   myVitals: null,
   net: null,
   connection: 'offline',
+  joinLog: [],
   hostInfo: null,
   state: null,
   clockOffset: 0,
   activeTask: null,
   history: new Map(),
   lastPhase: null,
+  map: null,
 };
 
 const clientId = sessionStorage.getItem('vv-client-id') || crypto.randomUUID();
@@ -121,9 +126,26 @@ function toast(text, kind = 'info') {
 
 // ---- networking -------------------------------------------------------------
 
+function pushJoinLog(message) {
+  const stamp = new Date().toLocaleTimeString();
+  ui.joinLog = [...ui.joinLog.slice(-7), `${stamp}  ${message}`];
+  console.log(`[join] ${message}`);
+  if (window.vv && window.vv.log) window.vv.log(`[join] ${message}`);
+  if (!ui.state) render();
+}
+
 function joinServer(url, name) {
   if (ui.net) ui.net.close();
+  ui.state = null;
+  ui.joinName = name;
+  pushJoinLog(`join requested by "${name}" → ${url}`);
   ui.net = connect(url, {
+    onLog: pushJoinLog,
+    onReset: () => {
+      toast('Ended the game. Joining the lobby...', 'info');
+      ui.state = null;
+      ui.net.join(ui.joinName, clientId);
+    },
     onStatus: (status) => {
       ui.connection = status;
       if (status === 'disconnected' && ui.state) toast('Lost connection to host, retrying...', 'warn');
@@ -137,6 +159,9 @@ function joinServer(url, name) {
       ui.lastPhase = state.phase;
       if (prev !== state.phase) onPhaseChange(prev, state.phase);
       render();
+    },
+    onPositions: (positions) => {
+      if (ui.map) ui.map.setPositions(positions);
     },
     onEvent: handleEvent,
     onError: (message) => toast(message, 'warn'),
@@ -170,7 +195,7 @@ function handleEvent(event) {
       break;
     case 'kill':
       sound.thud();
-      toast(event.text, 'danger');
+      toast('You were eliminated. You are a ghost now: you can drift through walls and watch.', 'danger');
       break;
     case 'accuse':
       sound.accuse();
@@ -214,11 +239,18 @@ function progressCalmTask(v) {
   else render();
 }
 
+function cancelTask() {
+  if (!ui.activeTask) return;
+  ui.activeTask = null;
+  render();
+}
+
 function finishTask(taskId) {
   if (!ui.activeTask || ui.activeTask.id !== taskId) return;
   ui.activeTask = null;
   ui.net.send('complete_task', { taskId });
   sound.blip();
+  render();
 }
 
 function taskProgress(task) {
@@ -234,11 +266,42 @@ function render() {
   if (!ui.net || !ui.state) {
     if (!ui.net) return;
     main.innerHTML = `<div class="center"><div class="panel"><h2>Connecting to host...</h2>
-      <p class="muted">${esc(ui.connection)}</p></div></div>`;
+      <p class="muted">${esc(ui.connection)}</p>
+      ${ui.joinLog.length ? `<div class="log">${ui.joinLog.map((line) => `<div>${esc(line)}</div>`).join('')}</div>` : ''}
+      <button class="btn ghost" data-action="abandon_game">End game in progress</button>
+      </div></div>`;
     return;
   }
-  const views = { lobby: lobbyView, roles: rolesView, tasks: tasksView, discussion: meetingView, voting: meetingView, reveal: revealView, gameover: gameoverView };
+  if (ui.state.phase === 'tasks') {
+    renderMap();
+    return;
+  }
+  unmountMap();
+  const views = { lobby: lobbyView, roles: rolesView, discussion: meetingView, voting: meetingView, reveal: revealView, gameover: gameoverView };
   main.innerHTML = (views[ui.state.phase] || lobbyView)();
+}
+
+function renderMap() {
+  if (!ui.map) {
+    main.classList.add('map-mode');
+    main.innerHTML = '<div class="map-stage"><canvas id="map-canvas"></canvas><div id="hud"></div></div>';
+    ui.map = createMapView($('#map-canvas'), {
+      send: (type, payload) => ui.net.send(type, payload),
+      now,
+      isBusy: () => !!ui.activeTask,
+      useTask: startTask,
+      cancelTask,
+    });
+  }
+  ui.map.setState(ui.state);
+  $('#hud').innerHTML = hudView();
+}
+
+function unmountMap() {
+  if (!ui.map) return;
+  ui.map.destroy();
+  ui.map = null;
+  main.classList.remove('map-mode');
 }
 
 function setupView() {
@@ -257,8 +320,10 @@ function setupView() {
           </div>
           <div class="setup-col">
             <h3>Join a friend</h3>
-            <input id="host-addr" placeholder="Host IP, e.g. 192.168.1.20" value="${esc(localStorage.getItem('vv-host') || '')}" />
+            <input id="host-addr" placeholder="IP, or https://….run.app" value="${esc(localStorage.getItem('vv-host') || '')}" />
+            <p class="muted">Same Wi-Fi: their IP. Campus: the Cloud Run URL.</p>
             <button id="join" class="btn">Join game</button>
+            <button id="reset-game" class="btn ghost">End game in progress</button>
           </div>
         </div>
         ${ui.config.missingKey ? '<p class="warn-box">No <code>PRESAGE_API_KEY</code> found in <code>.env</code>. Running with simulated vitals.</p>' : ''}
@@ -288,11 +353,40 @@ function setupView() {
     const name = getName();
     if (!name) return;
     const addr = $('#host-addr').value.trim();
-    if (!addr) { toast('Enter the host IP address', 'warn'); return; }
+    if (!addr) { toast('Enter the host IP or server address', 'warn'); return; }
     localStorage.setItem('vv-host', addr);
-    joinServer(`ws://${addr.includes(':') ? addr : `${addr}:${ui.config.port}`}`, name);
+    const url = gameSocketUrl(addr, ui.config.port);
+    pushJoinLog(`typed host "${addr}", dialing ${url}`);
+    joinServer(url, name);
     render();
   };
+  $('#reset-game').onclick = () => endGameInProgress(nameInput.value.trim());
+}
+
+function endGameInProgress(name) {
+  const addr = ($('#host-addr') && $('#host-addr').value.trim()) || localStorage.getItem('vv-host') || '';
+  if (!addr) { toast('Enter the server address first', 'warn'); return; }
+  const url = gameSocketUrl(addr, ui.config.port);
+  if (ui.net) {
+    ui.joinName = name || ui.joinName;
+    ui.net.send('abandon_game');
+    return;
+  }
+  const ws = new WebSocket(url);
+  const timer = setTimeout(() => { ws.close(); toast('Server did not answer the reset', 'warn'); }, 8000);
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'abandon_game' }));
+  ws.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type !== 'reset') return;
+    clearTimeout(timer);
+    ws.close();
+    toast('Ended the game on the server.', 'info');
+    if (!name) return;
+    localStorage.setItem('vv-name', name);
+    joinServer(url, name);
+  };
+  ws.onerror = () => {};
 }
 
 function isHost() { return ui.state.me && ui.state.hostId === ui.state.me.id; }
@@ -355,53 +449,42 @@ function hostSkip(label) {
   return isHost() ? `<button class="btn small ghost" data-action="skip_phase">${label}</button>` : '';
 }
 
-function tasksView() {
+function taskModal() {
+  const t = ui.activeTask;
+  if (!t) return '';
+  const task = ui.state.me.tasks.find((x) => x.id === t.id);
+  if (!task) return '';
+  const pct = Math.round(taskProgress(task) * 100);
+  const calmNote = t.kind === 'calm'
+    ? `<div class="calm-note ${t.calm ? 'ok' : 'bad'}">${t.calm ? 'Steady... keep breathing slowly' : 'Pulse too far from resting - relax'}</div>` : '';
+  return `
+    <div class="task-modal">
+      <h3>${esc(task.label)}</h3>
+      <div class="bar big-bar"><div class="bar-fill" style="width:${pct}%"></div></div>
+      ${calmNote}
+      <div class="muted">Esc to cancel</div>
+    </div>`;
+}
+
+function hudView() {
   const s = ui.state;
   const me = s.me;
   const impostor = me.role === 'impostor';
-  const killIn = impostor ? Math.max(0, Math.ceil((me.killReadyAt - now()) / 1000)) : 0;
-  const others = s.players.filter((p) => p.id !== me.id);
+  const pos = ui.map && ui.map.position();
+  const room = pos ? roomAt(pos.x, pos.y) : null;
   return `
-    <div class="tasks">
-      <header class="phase-head">
-        <h2>Shift in progress ${impostor ? '<span class="tag danger">impostor</span>' : ''}</h2>
-        ${timerChip()}
-      </header>
+    <div class="hud-top">
       <div class="taskbar"><div class="taskbar-fill" style="width:${Math.round(s.taskProgress * 100)}%"></div><span>Crew tasks ${Math.round(s.taskProgress * 100)}%</span></div>
-      ${!me.alive ? '<div class="ghost-note">You are unconscious. You can still watch, but you cannot vote.</div>' : ''}
-      <div class="tasks-layout">
-        <section>
-          <h3>${impostor ? 'Fake tasks (blend in)' : 'Your tasks'}</h3>
-          <ul class="task-list">
-            ${me.tasks.map((t) => {
-              const active = ui.activeTask && ui.activeTask.id === t.id;
-              const pct = Math.round(taskProgress(t) * 100);
-              const calmNote = active && t.kind === 'calm'
-                ? `<div class="calm-note ${ui.activeTask.calm ? 'ok' : 'bad'}">${ui.activeTask.calm ? 'Steady... keep breathing slowly' : 'Pulse too far from resting - relax'}</div>` : '';
-              return `<li class="task ${t.done ? 'done' : ''}">
-                <div class="task-label">${t.done ? '&#10003; ' : ''}${esc(t.label)}</div>
-                ${t.done ? '' : `<div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>${calmNote}
-                <button class="btn small" data-task="${t.id}" ${ui.activeTask || !me.alive ? 'disabled' : ''}>${active ? 'Working...' : 'Do task'}</button>`}
-              </li>`;
-            }).join('')}
-          </ul>
-          ${me.alive ? '<button class="btn danger big" data-action="call_meeting">Emergency meeting</button>' : ''}
-        </section>
-        <section>
-          <h3>Crew status</h3>
-          <div class="roster">
-            ${others.map((p) => `
-              <div class="roster-row ${p.alive ? '' : 'dead'}">
-                ${avatar(p.color, { dead: !p.alive, size: 36 })}
-                <span class="pname">${esc(p.name)}</span>
-                <span class="muted">${p.alive ? 'working' : 'unconscious'}</span>
-                ${impostor && me.alive && p.alive ? `<button class="btn small danger" data-kill="${p.id}" ${killIn ? 'disabled' : ''}>${killIn ? `Eliminate (${killIn}s)` : 'Eliminate'}</button>` : ''}
-              </div>`).join('')}
-          </div>
-        </section>
-      </div>
-      <div class="footer-row">${hostSkip('Skip to meeting')}</div>
-    </div>`;
+      <div class="hud-right">${impostor ? '<span class="tag danger">impostor</span>' : ''}${timerChip()}${hostSkip('Skip to meeting')}</div>
+    </div>
+    <div class="hud-tasks">
+      <h4>${impostor ? 'Fake tasks (blend in)' : 'Tasks'}</h4>
+      ${me.tasks.map((t) => `<div class="hud-task ${t.done ? 'done' : ''}">${t.done ? '&#10003;' : '&#9679;'} ${esc(roomAt(t.x, t.y))}: ${esc(t.label)}</div>`).join('')}
+      ${!me.alive ? '<div class="ghost-note">You are a ghost. Drift around and watch.</div>' : ''}
+    </div>
+    ${room ? `<div class="hud-room">${esc(room)}</div>` : ''}
+    <div class="hud-keys">WASD move &middot; E use &middot; R report${impostor ? ' &middot; Q eliminate' : ''}</div>
+    ${taskModal()}`;
 }
 
 function vitalsCard(p, s) {
@@ -441,7 +524,7 @@ function meetingView() {
     <div class="meeting">
       <header class="phase-head">
         <h2>${voting ? 'Vote now' : 'Emergency meeting'}</h2>
-        <div class="muted">Called by ${esc(s.meetingCaller)} &middot; spike = ${s.config.spikeBpm}+ BPM above resting</div>
+        <div class="muted">${esc(s.meetingCaller)} &middot; spike = ${s.config.spikeBpm}+ BPM above resting</div>
         ${timerChip()}
       </header>
       <div class="vitals-grid">${s.players.map((p) => vitalsCard(p, s)).join('')}</div>
@@ -500,12 +583,8 @@ function gameoverView() {
 main.addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn || btn.disabled || !ui.net) return;
-  const { action, task, kill, accuse, vote } = btn.dataset;
+  const { action, accuse, vote } = btn.dataset;
   if (action) ui.net.send(action);
-  else if (task) {
-    const t = ui.state.me.tasks.find((x) => x.id === task);
-    if (t) startTask(t);
-  } else if (kill) ui.net.send('kill', { targetId: kill });
   else if (accuse) ui.net.send('accuse', { targetId: accuse });
   else if (vote) ui.net.send('vote', { targetId: vote });
 });
@@ -552,8 +631,8 @@ async function boot() {
 
   setInterval(sendVitals, 1000);
   setInterval(() => {
-    if (ui.activeTask && ui.activeTask.kind === 'hold') render();
-  }, 100);
+    if (ui.map) renderMap();
+  }, 150);
 
   setupView();
 }

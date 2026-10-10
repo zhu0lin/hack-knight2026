@@ -3,7 +3,7 @@
 const os = require('os');
 const { createGameServer } = require('./game-server');
 
-const port = Number(process.env.VV_PORT) || 7777;
+const port = Number(process.env.PORT || process.env.VV_PORT) || 7777;
 const server = createGameServer({ port });
 
 server.ready.then(() => {
@@ -15,7 +15,10 @@ server.ready.then(() => {
   for (const addr of addresses) console.log(`  ${addr}:${port}`);
 });
 
-process.on('SIGINT', () => {
+function shutdown() {
   server.close();
   process.exit(0);
-});
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

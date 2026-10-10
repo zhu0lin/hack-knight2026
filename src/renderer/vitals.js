@@ -157,7 +157,7 @@ class PresageSource {
 
 /**
  * Stand-in for the SDK when no API key is configured. Produces a plausible
- * resting pulse that random-walks; holding the "S" key simulates stress.
+ * resting pulse that random-walks; holding the "H" key simulates stress.
  */
 class SimulatedSource {
   constructor(tracker) {
@@ -185,10 +185,10 @@ class SimulatedSource {
     if (!this.bound) {
       this.bound = true;
       window.addEventListener('keydown', (e) => {
-        if (e.key.toLowerCase() === 's' && !isTyping(e)) this.stressHeld = true;
+        if (e.key.toLowerCase() === 'h' && !isTyping(e)) this.stressHeld = true;
       });
       window.addEventListener('keyup', (e) => {
-        if (e.key.toLowerCase() === 's') this.stressHeld = false;
+        if (e.key.toLowerCase() === 'h') this.stressHeld = false;
       });
     }
 
