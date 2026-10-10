@@ -1,4 +1,4 @@
-export function connect(url, { onState, onEvent, onError, onStatus }) {
+export function connect(url, { onState, onPositions, onEvent, onError, onStatus }) {
   let ws = null;
   let closedByUser = false;
   let joinMsg = null;
@@ -14,6 +14,7 @@ export function connect(url, { onState, onEvent, onError, onStatus }) {
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === 'state') onState(msg.state);
+      else if (msg.type === 'positions') onPositions(msg.positions);
       else if (msg.type === 'event') onEvent(msg.event);
       else if (msg.type === 'error') onError(msg.message);
     };

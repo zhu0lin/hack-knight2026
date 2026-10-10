@@ -2,11 +2,12 @@
 
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
+const MAP = require('../shared/map');
 
 const DEFAULT_CONFIG = {
   minPlayers: 3,
   tasksPerPlayer: 3,
-  taskPhaseMs: 90_000,
+  taskPhaseMs: 150_000,
   discussionMs: 60_000,
   votingMs: 30_000,
   revealMs: 7_000,
@@ -15,17 +16,15 @@ const DEFAULT_CONFIG = {
   fakeVitalsMs: 25_000,
   spikeBpm: 10,
   vitalsStaleMs: 15_000,
+  botTaskMs: 3_000,
 };
 
-const COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c', '#ff6fb5', '#ecf0f1', '#8d6e63'];
+const TICK_MS = 66;
+const STATE_EVERY_TICKS = 15;
+const MAX_MOVE_PER_MESSAGE = 120;
+const RANGE_SLACK = 15;
 
-const TASKS = [
-  { id: 'wires', label: 'Reconnect the sensor wires', kind: 'hold' },
-  { id: 'card', label: 'Swipe your ID badge', kind: 'hold' },
-  { id: 'samples', label: 'Sort the lab samples', kind: 'hold' },
-  { id: 'reactor', label: 'Calm the reactor (stay near your resting BPM)', kind: 'calm' },
-  { id: 'scan', label: 'Run a medbay scan', kind: 'hold' },
-];
+const COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c', '#ff6fb5', '#ecf0f1', '#8d6e63'];
 
 const BOT_NAMES = ['Nova', 'Pixel', 'Juno', 'Rook', 'Echo', 'Sable'];
 
@@ -45,6 +44,7 @@ class Game {
     this.players = new Map();
     this.hostId = null;
     this.listeners = new Set();
+    this.lastTickAt = clock();
     this.resetRound();
   }
 
@@ -56,18 +56,10 @@ class Game {
     this.spotlight = null;
     this.lastEjection = null;
     this.winner = null;
+    this.bodies = [];
     this.log = [];
-    for (const p of this.players.values()) {
-      p.role = null;
-      p.alive = true;
-      p.tasks = [];
-      p.vote = null;
-      p.killReadyAt = 0;
-      p.fakeUntil = 0;
-      p.fakeBpm = null;
-      p.fakeUsedInMeeting = -1;
-      p.spiking = false;
-    }
+    for (const p of this.players.values()) this.resetPlayer(p);
+    this.resetPositions();
   }
 
   // ---- events -------------------------------------------------------------
@@ -102,6 +94,7 @@ class Game {
     this.players.set(player.id, player);
     if (!this.hostId && !isBot) this.hostId = player.id;
     this.resetPlayer(player);
+    this.resetPositions();
     this.emit({ type: 'join', text: `${player.name} joined` });
     return player;
   }
@@ -110,6 +103,15 @@ class Game {
     Object.assign(p, {
       role: null, alive: true, tasks: [], vote: null, killReadyAt: 0,
       fakeUntil: 0, fakeBpm: null, fakeUsedInMeeting: -1, spiking: false,
+    });
+    if (p.isBot) p.nav = { path: [], workingOn: null, workUntil: 0 };
+  }
+
+  resetPositions() {
+    const list = [...this.players.values()];
+    list.forEach((p, i) => {
+      Object.assign(p, MAP.spawnPoint(i, list.length));
+      if (p.nav) p.nav = { path: [], workingOn: null, workUntil: 0 };
     });
   }
 
@@ -155,6 +157,16 @@ class Game {
       hint: typeof v.hint === 'string' ? v.hint.slice(0, 80) : null,
       at: this.clock(),
     };
+  }
+
+  move(id, x, y) {
+    const p = this.players.get(id);
+    if (!p || p.isBot || this.phase !== 'tasks') return;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (Math.hypot(x - p.x, y - p.y) > MAX_MOVE_PER_MESSAGE) return;
+    if (p.alive ? !MAP.isWalkable(x, y, MAP.PLAYER_RADIUS - 2) : (x < 0 || y < 0 || x > MAP.WORLD.width || y > MAP.WORLD.height)) return;
+    p.x = x;
+    p.y = y;
   }
 
   // ---- derived ------------------------------------------------------------
@@ -207,13 +219,15 @@ class Game {
     const impostor = shuffle(players)[0];
     for (const p of players) {
       p.role = p === impostor ? 'impostor' : 'crew';
-      p.tasks = shuffle(TASKS).slice(0, this.config.tasksPerPlayer).map((t) => ({ ...t, done: false }));
+      p.tasks = shuffle(MAP.TASKS).slice(0, this.config.tasksPerPlayer).map((t) => ({ ...t, done: false }));
       p.killReadyAt = this.clock() + this.config.roleRevealMs + this.config.killCooldownMs;
     }
     this.meetingNumber = 0;
     this.winner = null;
     this.lastEjection = null;
+    this.bodies = [];
     this.log = [];
+    this.resetPositions();
     this.setPhase('roles', this.config.roleRevealMs);
     this.emit({ type: 'game_start', text: 'Shift started. One of you is an impostor.' });
   }
@@ -223,6 +237,7 @@ class Game {
     if (!p || this.phase !== 'tasks' || !p.alive) return;
     const task = p.tasks.find((t) => t.id === taskId);
     if (!task || task.done) return;
+    if (MAP.distance(p, task) > MAP.USE_RANGE + RANGE_SLACK) return;
     task.done = true;
     if (p.role === 'crew' && this.taskProgress() >= 1) this.finish('crew', 'All tasks completed!');
   }
@@ -233,28 +248,41 @@ class Game {
     if (this.phase !== 'tasks' || !killer || !target) return;
     if (killer.role !== 'impostor' || !killer.alive || !target.alive || target.role === 'impostor') return;
     if (this.clock() < killer.killReadyAt) return;
+    if (MAP.distance(killer, target) > MAP.KILL_RANGE + RANGE_SLACK) return;
     target.alive = false;
     killer.killReadyAt = this.clock() + this.config.killCooldownMs;
-    this.emit({ type: 'kill', targetId, text: `${target.name} was found unconscious!` });
+    this.bodies.push({ id: crypto.randomUUID().slice(0, 8), playerId: target.id, x: target.x, y: target.y });
+    this.emit({ type: 'kill', private: true, playerId: target.id });
     this.checkWin();
   }
 
   callMeeting(id) {
     const p = this.players.get(id);
-    if (this.phase !== 'tasks' || (p && !p.alive)) return;
-    this.startMeeting(p ? p.name : 'The timer');
+    if (this.phase !== 'tasks' || !p || !p.alive) return;
+    if (MAP.distance(p, MAP.EMERGENCY_BUTTON) > MAP.BUTTON_RANGE + RANGE_SLACK) return;
+    this.startMeeting(`${p.name} pressed the emergency button`);
   }
 
-  startMeeting(callerName) {
+  report(id, bodyId) {
+    const p = this.players.get(id);
+    const body = this.bodies.find((b) => b.id === bodyId);
+    if (this.phase !== 'tasks' || !p || !p.alive || !body) return;
+    if (MAP.distance(p, body) > MAP.REPORT_RANGE + RANGE_SLACK) return;
+    const victim = this.players.get(body.playerId);
+    this.startMeeting(`${p.name} found ${victim ? victim.name : 'someone'}'s body`);
+  }
+
+  startMeeting(reason) {
     this.meetingNumber += 1;
-    this.meetingCaller = callerName;
+    this.meetingCaller = reason;
     this.spotlight = null;
+    this.bodies = [];
     for (const p of this.players.values()) {
       p.vote = null;
       p.spiking = false;
     }
     this.setPhase('discussion', this.config.discussionMs);
-    this.emit({ type: 'meeting', text: `Emergency meeting called by ${callerName}` });
+    this.emit({ type: 'meeting', text: reason });
   }
 
   accuse(id, targetId) {
@@ -329,7 +357,7 @@ class Game {
         this.setPhase('tasks', this.config.taskPhaseMs);
         break;
       case 'tasks':
-        this.startMeeting('The shift timer');
+        this.startMeeting('The shift timer ran out');
         break;
       case 'discussion':
         this.setPhase('voting', this.config.votingMs);
@@ -343,6 +371,7 @@ class Game {
           for (const p of this.players.values()) {
             if (p.role === 'impostor') p.killReadyAt = this.clock() + this.config.killCooldownMs;
           }
+          this.resetPositions();
           this.setPhase('tasks', this.config.taskPhaseMs);
         }
         break;
@@ -367,17 +396,21 @@ class Game {
 
   playAgain(byId) {
     if (byId !== this.hostId) return;
-    this.resetRound();
     for (const p of [...this.players.values()]) {
       if (!p.connected && !p.isBot) this.players.delete(p.id);
     }
+    this.resetRound();
     this.emit({ type: 'lobby', text: 'Back to the lobby' });
   }
 
   // ---- ticking ------------------------------------------------------------
 
   tick(now = this.clock()) {
-    this.tickBots(now);
+    const dt = Math.min(1.5, Math.max(0, (now - this.lastTickAt) / 1000));
+    this.lastTickAt = now;
+    this.tickBotVitals(now, dt);
+    if (this.phase === 'tasks') this.tickBotsOnMap(now, dt);
+    if (this.phase === 'voting') this.tickBotVotes(dt);
     if (this.phaseEndsAt && now >= this.phaseEndsAt) this.advance();
     if (this.phase === 'discussion' || this.phase === 'voting') {
       for (const p of this.alive()) {
@@ -390,37 +423,103 @@ class Game {
     }
   }
 
-  tickBots(now) {
-    const bots = [...this.players.values()].filter((p) => p.isBot);
-    for (const bot of bots) {
+  bots() { return [...this.players.values()].filter((p) => p.isBot); }
+
+  tickBotVitals(now, dt) {
+    for (const bot of this.bots()) {
       const s = bot.sim;
       const accused = this.spotlight && this.spotlight.targetId === bot.id && now - this.spotlight.at < 20_000;
-      if (accused) s.stress = Math.min(28, s.stress + (bot.role === 'impostor' ? 5 : 2.5));
-      else s.stress = Math.max(0, s.stress - 1.2);
-      s.bpm += (s.resting + s.stress - s.bpm) * 0.35 + (Math.random() - 0.5) * 2;
+      const rate = dt * (accused ? (bot.role === 'impostor' ? 5 : 2.5) : -1.2);
+      s.stress = Math.min(28, Math.max(0, s.stress + rate));
+      s.bpm += ((s.resting + s.stress - s.bpm) * 0.35 + (Math.random() - 0.5) * 2) * Math.min(1, dt);
       bot.vitals = { ...bot.vitals, bpm: Math.round(s.bpm), at: now };
+    }
+  }
 
-      if (!bot.alive) continue;
-      if (this.phase === 'tasks') {
-        if (bot.role === 'crew' && Math.random() < 0.06) {
-          const task = bot.tasks.find((t) => !t.done);
-          if (task) this.completeTask(bot.id, task.id);
-        }
-        if (bot.role === 'impostor' && now >= bot.killReadyAt && Math.random() < 0.08) {
-          const targets = this.crewAlive();
-          if (targets.length) this.kill(bot.id, shuffle(targets)[0].id);
-        }
-      }
-      if (this.phase === 'voting' && bot.vote === null && Math.random() < 0.15) {
-        const options = this.alive().filter((p) => p.id !== bot.id && p.role !== (bot.role === 'impostor' ? 'impostor' : null));
-        const suspect = this.spotlight && this.spotlight.targetId !== bot.id ? this.spotlight.targetId : null;
-        const pick = suspect && Math.random() < 0.6 ? suspect : Math.random() < 0.3 ? 'skip' : (shuffle(options)[0] || { id: 'skip' }).id;
-        this.vote(bot.id, pick);
+  walk(bot, dist) {
+    const path = bot.nav.path;
+    while (dist > 0 && path.length) {
+      const target = path[0];
+      const d = MAP.distance(bot, target);
+      if (d <= dist) {
+        bot.x = target.x;
+        bot.y = target.y;
+        path.shift();
+        dist -= d;
+      } else {
+        bot.x += ((target.x - bot.x) / d) * dist;
+        bot.y += ((target.y - bot.y) / d) * dist;
+        dist = 0;
       }
     }
   }
 
+  tickBotsOnMap(now, dt) {
+    for (const bot of this.bots()) {
+      if (!bot.alive || this.phase !== 'tasks') continue;
+      const nav = bot.nav;
+
+      if (bot.role === 'crew') {
+        const body = this.bodies.find((b) => MAP.distance(bot, b) <= MAP.REPORT_RANGE);
+        if (body && Math.random() < dt * 0.8) {
+          this.report(bot.id, body.id);
+          return;
+        }
+      } else {
+        const victim = this.crewAlive().find((p) => MAP.distance(bot, p) <= MAP.KILL_RANGE);
+        if (victim && now >= bot.killReadyAt && Math.random() < dt * 0.6) {
+          this.kill(bot.id, victim.id);
+          if (this.phase !== 'tasks') return;
+        }
+      }
+
+      if (nav.workingOn) {
+        if (now < nav.workUntil) continue;
+        this.completeTask(bot.id, nav.workingOn);
+        nav.workingOn = null;
+        if (this.phase !== 'tasks') return;
+      }
+
+      if (nav.path.length) {
+        this.walk(bot, MAP.SPEED * dt);
+        continue;
+      }
+
+      if (bot.role === 'impostor') {
+        const targets = this.crewAlive();
+        if (!targets.length) continue;
+        const prey = targets.reduce((a, b) => (MAP.distance(bot, a) <= MAP.distance(bot, b) ? a : b));
+        nav.path = MAP.nearestNode(bot) === MAP.nearestNode(prey) ? [{ x: prey.x, y: prey.y }] : MAP.route(bot, prey).slice(0, 2);
+        continue;
+      }
+
+      const atTask = bot.tasks.find((t) => !t.done && MAP.distance(bot, t) <= MAP.USE_RANGE);
+      if (atTask) {
+        nav.workingOn = atTask.id;
+        nav.workUntil = now + this.config.botTaskMs;
+        continue;
+      }
+      const next = bot.tasks.find((t) => !t.done);
+      const dest = next || MAP.TASKS[Math.floor(Math.random() * MAP.TASKS.length)];
+      nav.path = MAP.route(bot, dest);
+    }
+  }
+
+  tickBotVotes(dt) {
+    for (const bot of this.bots()) {
+      if (!bot.alive || bot.vote !== null || Math.random() > dt * 0.25) continue;
+      const options = this.alive().filter((p) => p.id !== bot.id && !(bot.role === 'impostor' && p.role === 'impostor'));
+      const suspect = this.spotlight && this.spotlight.targetId !== bot.id ? this.spotlight.targetId : null;
+      const pick = suspect && Math.random() < 0.6 ? suspect : Math.random() < 0.3 ? 'skip' : (shuffle(options)[0] || { id: 'skip' }).id;
+      this.vote(bot.id, pick);
+    }
+  }
+
   // ---- views --------------------------------------------------------------
+
+  positions() {
+    return [...this.players.values()].map((p) => [p.id, Math.round(p.x), Math.round(p.y)]);
+  }
 
   publicPlayer(p, now) {
     const revealRoles = this.phase === 'gameover';
@@ -435,6 +534,8 @@ class Game {
       isHost: p.id === this.hostId,
       role: revealRoles || ejected ? p.role : null,
       voted: p.vote !== null,
+      x: Math.round(p.x),
+      y: Math.round(p.y),
       vitals: this.displayedVitals(p, now),
     };
   }
@@ -454,6 +555,7 @@ class Game {
       taskProgress: this.taskProgress(),
       config: { minPlayers: this.config.minPlayers, spikeBpm: this.config.spikeBpm },
       players: [...this.players.values()].map((p) => this.publicPlayer(p, now)),
+      bodies: this.bodies,
       log: this.log,
       me: null,
     };
@@ -483,6 +585,10 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
     const now = game.clock();
     for (const [ws, playerId] of sockets) send(ws, { type: 'state', state: game.viewFor(playerId, now) });
   };
+  const broadcastPositions = () => {
+    const msg = JSON.stringify({ type: 'positions', positions: game.positions() });
+    for (const ws of sockets.keys()) if (ws.readyState === ws.OPEN) ws.send(msg);
+  };
 
   game.onEvent((event) => {
     for (const [ws, playerId] of sockets) {
@@ -508,12 +614,14 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
         if (!playerId) return;
         switch (msg.type) {
           case 'hr_update': game.updateVitals(playerId, msg.vitals || {}); return;
+          case 'move': game.move(playerId, Number(msg.x), Number(msg.y)); return;
           case 'start_game': game.start(playerId); break;
           case 'add_bot': if (playerId === game.hostId) game.addBot(); break;
           case 'remove_bot': if (playerId === game.hostId) game.removeBot(); break;
           case 'complete_task': game.completeTask(playerId, msg.taskId); break;
           case 'kill': game.kill(playerId, msg.targetId); break;
           case 'call_meeting': game.callMeeting(playerId); break;
+          case 'report': game.report(playerId, msg.bodyId); break;
           case 'accuse': game.accuse(playerId, msg.targetId); break;
           case 'fake_vitals': game.fakeVitals(playerId); break;
           case 'vote': game.vote(playerId, msg.targetId); break;
@@ -534,10 +642,13 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
     });
   });
 
+  let ticks = 0;
   const timer = setInterval(() => {
     game.tick();
-    broadcastState();
-  }, 1000);
+    if (game.phase === 'tasks') broadcastPositions();
+    ticks += 1;
+    if (ticks % STATE_EVERY_TICKS === 0) broadcastState();
+  }, TICK_MS);
 
   const ready = new Promise((resolve, reject) => {
     wss.once('listening', () => { log(`[vital-verdict] game server listening on :${port}`); resolve(); });
