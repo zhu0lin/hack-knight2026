@@ -47,12 +47,20 @@ ipcMain.handle('vv:config', () => {
   };
 });
 
+ipcMain.on('vv:log', (_event, message) => {
+  if (typeof message !== 'string') return;
+  console.log(message.slice(0, 500));
+});
+
 ipcMain.handle('vv:host', async () => {
   if (!gameServer) {
+    console.log(`[vital-verdict] starting game server on port ${port}`);
     gameServer = createGameServer({ port });
     await gameServer.ready;
   }
-  return { port, addresses: lanAddresses() };
+  const addresses = lanAddresses();
+  console.log(`[vital-verdict] host ready; others join at ${addresses.map((addr) => `${addr}:${port}`).join(', ') || `localhost:${port}`}`);
+  return { port, addresses };
 });
 
 function createWindow() {

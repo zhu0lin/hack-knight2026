@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+.env
+**/.env
+*.md
+test
+src/main
+src/renderer

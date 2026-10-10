@@ -2,9 +2,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const http = require('http');
 const WebSocket = require('ws');
 const { Game, createGameServer } = require('../src/server/game-server');
 const MAP = require('../src/shared/map');
+const { gameSocketUrl } = require('../src/socket-url');
 
 function lockedVitals(bpm, baseline = 70) {
   return { bpm, confidence: 90, baseline, locked: true, hint: null };
@@ -244,4 +246,29 @@ test('LAN server relays heart rate and positions between connected clients', asy
   ann.ws.close();
   ben.ws.close();
   server.close();
+});
+
+test('health check responds ok for Cloud Run', async () => {
+  const port = 17778;
+  const server = createGameServer({ port, log: () => {} });
+  await server.ready;
+  const result = await new Promise((resolve, reject) => {
+    http.get(`http://127.0.0.1:${port}/health`, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    }).on('error', reject);
+  });
+  assert.strictEqual(result.status, 200);
+  assert.strictEqual(result.body, 'ok');
+  server.close();
+});
+
+test('join addresses become the right websocket URL', () => {
+  assert.strictEqual(gameSocketUrl('192.168.1.20', 7777), 'ws://192.168.1.20:7777');
+  assert.strictEqual(gameSocketUrl('192.168.1.20:7777', 7777), 'ws://192.168.1.20:7777');
+  assert.strictEqual(gameSocketUrl('localhost', 7777), 'ws://localhost:7777');
+  assert.strictEqual(gameSocketUrl('https://vital-verdict-abc.run.app/', 7777), 'wss://vital-verdict-abc.run.app');
+  assert.strictEqual(gameSocketUrl('wss://vital-verdict-abc.run.app', 7777), 'wss://vital-verdict-abc.run.app');
+  assert.strictEqual(gameSocketUrl('vital-verdict-abc.run.app', 7777), 'wss://vital-verdict-abc.run.app');
 });
