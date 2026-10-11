@@ -46,6 +46,10 @@ export function blip() {
   tone(1200, 0, 0.08, { gain: 0.1 });
 }
 
+export function buzz() {
+  tone(140, 0, 0.25, { type: 'square', gain: 0.07 });
+}
+
 export function roleReveal() {
   tone(196, 0, 0.8, { type: 'sine', gain: 0.2 });
   tone(147, 0.3, 1.0, { type: 'sine', gain: 0.15 });

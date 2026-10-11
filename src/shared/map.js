@@ -42,13 +42,13 @@ const CORRIDORS = [
 const WALKABLE = [...ROOMS, ...CORRIDORS];
 
 const TASKS = [
-  { id: 'wires', label: 'Reconnect the sensor wires', kind: 'hold', room: 'elec', x: 500, y: 1100 },
-  { id: 'card', label: 'Swipe your ID badge', kind: 'hold', room: 'comms', x: 1900, y: 1100 },
+  { id: 'wires', label: 'Reconnect the sensor wires', kind: 'wires', room: 'elec', x: 500, y: 1100 },
+  { id: 'card', label: 'Swipe your ID badge', kind: 'swipe', room: 'comms', x: 1900, y: 1100 },
   { id: 'samples', label: 'Sort the lab samples', kind: 'hold', room: 'lab', x: 1900, y: 300 },
   { id: 'reactor', label: 'Calm the reactor (stay near your resting BPM)', kind: 'calm', room: 'reactor', x: 120, y: 680 },
   { id: 'scan', label: 'Run a medbay scan', kind: 'hold', room: 'medbay', x: 500, y: 300 },
   { id: 'fuel', label: 'Refuel the engines', kind: 'hold', room: 'storage', x: 1000, y: 1320 },
-  { id: 'course', label: 'Chart the course', kind: 'hold', room: 'nav', x: 2280, y: 800 },
+  { id: 'course', label: 'Chart the course', kind: 'course', room: 'nav', x: 2280, y: 800 },
 ];
 
 // Vents in the same network connect to each other; list order is the cycle order.

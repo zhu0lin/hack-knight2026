@@ -47,6 +47,8 @@ src/renderer/index.html   Static shell: vitals sidebar + #main view container
 src/renderer/app.js       UI state + screens (setup, lobby, roles, meeting, reveal, gameover), task logic, event handling
 src/renderer/map-view.js  Canvas map for the tasks phase: WASD movement, collision, camera, vision fog, E/Q/R actions
 src/renderer/vitals.js    SmartSpectra renderer SDK wrapper + simulated source + baseline calibration
+src/renderer/minigames.js Mouse minigames for the swipe, wires and course tasks
+src/shared/minigame-rules.js Pure pass/fail rules for the minigames (tested)
 src/renderer/net.js       WebSocket client with reconnect, connect timeout, and join diagnostics
 src/renderer/sound.js     WebAudio sound effects (no audio files)
 src/renderer/styles.css   All styling
@@ -134,7 +136,8 @@ Game state lives in memory in a single process. **Cloud Run must run exactly one
 
 - **`shared/map.js`** defines a 2400x1500 world as **rooms and corridors (axis-aligned rectangles)**. The walkable area is their union; there are no wall polygons. `isWalkable(x, y)` tests the center plus 8 points on the player's radius (18), which avoids seam gaps where rectangles meet. Corridors overlap the rooms they join by 10 units for the same reason.
 - When editing the map, keep corridors overlapping their rooms, keep task stations, spawn points and waypoint edges inside the walkable area, and run `npm test`.
-- **Task stations** are defined in `TASKS`, with a room, a position, and `kind: 'hold' | 'calm'`. Hold tasks take 2.5 s. Calm tasks ("Calm the reactor") need the player's pulse within 6 BPM of baseline for 6 s of accumulated time. Tasks are assigned randomly per player (`tasksPerPlayer`, default 3).
+- **Task stations** are defined in `TASKS`, with a room, a position, and `kind: 'hold' | 'calm' | 'swipe' | 'wires' | 'course'`. Hold tasks take 2.5 s. Calm tasks ("Calm the reactor") need the player's pulse within 6 BPM of baseline for 6 s of accumulated time. Tasks are assigned randomly per player (`tasksPerPlayer`, default 3).
+- **Minigames** (`swipe`, `wires`, `course`) are mouse-driven and live in `src/renderer/minigames.js`. Their pass/fail rules (swipe window 600-1300 ms, wire order, course waypoints and off-course distance) are pure functions in `src/shared/minigame-rules.js`, so they're unit-tested with `node:test`. Minigames mount into `#task-layer`, a sibling of `#hud`, because `#hud` is rewritten every 150 ms and would destroy their DOM and pointer state. `clearActiveTask()` in `app.js` is the single teardown path (Esc, finishing, a phase change, death, unmounting the map). Completion is still trusted from the client: the server only range-checks `complete_task`, and bots ignore task kinds.
 - **Spawn:** players spawn in a circle around the emergency button in the Mess Hall at game start and after every meeting.
 - **Vision:** crew see 380 units and the impostor 520. Fog is purely client-side rendering, and the server still sends all positions. Ghosts see everything and move through walls.
 - **Vents:** `VENTS` in `map.js` groups six vents into two networks; list order is the cycle order for `ventNeighbor`. Only a living impostor within `VENT_RANGE` can enter, and they can only travel within the entered network. A vented player is the one exception to "the server sends all positions": `hiddenFrom` drops them from other players' `state.players` and `positions` (so positions are built per recipient), and the client drops remote players that vanish from `state.players` so they don't reappear sliding from stale coordinates. Meetings and game over force everyone out.
