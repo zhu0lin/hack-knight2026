@@ -490,6 +490,7 @@ class Game {
     this.lastTickAt = now;
     this.tickBotVitals(now, dt);
     if (this.phase === 'tasks') this.tickBotsOnMap(now, dt);
+    if (this.phase === 'discussion') this.tickBotReady(dt);
     if (this.phase === 'voting') this.tickBotVotes(dt);
     if (this.phaseEndsAt && now >= this.phaseEndsAt) this.advance();
     if (this.phase === 'discussion' || this.phase === 'voting') {
@@ -583,6 +584,13 @@ class Game {
       const next = bot.tasks.find((t) => !t.done);
       const dest = next || MAP.TASKS[Math.floor(Math.random() * MAP.TASKS.length)];
       nav.path = MAP.route(bot, dest);
+    }
+  }
+
+  tickBotReady(dt) {
+    for (const bot of this.bots()) {
+      if (!bot.alive || bot.readyToVote || Math.random() > dt * 0.2) continue;
+      this.readyToVote(bot.id);
     }
   }
 
