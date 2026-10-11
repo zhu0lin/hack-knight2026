@@ -25,6 +25,7 @@ const TICK_MS = 66;
 const STATE_EVERY_TICKS = 15;
 const MAX_MOVE_PER_MESSAGE = 120;
 const RANGE_SLACK = 15;
+const MAX_FACE_SNAPSHOT_CHARS = 150_000;
 
 const COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c', '#ff6fb5', '#ecf0f1', '#8d6e63'];
 
@@ -693,6 +694,10 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
           case 'hr_update': game.updateVitals(playerId, msg.vitals || {}); return;
           case 'face_snapshot': {
             if (typeof msg.jpeg !== 'string') return;
+            if (msg.jpeg.length > MAX_FACE_SNAPSHOT_CHARS) {
+              log(`[vital-verdict] rejected oversized face_snapshot from ${remote} (${msg.jpeg.length} chars)`);
+              return;
+            }
             const payload = JSON.stringify({ type: 'facecam', playerId, jpeg: msg.jpeg });
             for (const sock of sockets.keys()) {
               if (sock !== ws && sock.readyState === sock.OPEN) sock.send(payload);

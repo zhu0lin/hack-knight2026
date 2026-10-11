@@ -432,6 +432,40 @@ test('health check responds ok for Cloud Run', async () => {
   server.close();
 });
 
+test('oversized face_snapshot payloads are rejected and not broadcast', async () => {
+  const port = 17780;
+  const logs = [];
+  const server = createGameServer({ port, log: (line) => logs.push(line) });
+  await server.ready;
+
+  const open = (name) => new Promise((resolve) => {
+    const ws = new WebSocket(`ws://localhost:${port}`);
+    const client = { ws, facecam: null };
+    ws.on('message', (raw) => {
+      const msg = JSON.parse(raw);
+      if (msg.type === 'facecam') client.facecam = msg;
+    });
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ type: 'join', name, clientId: name }));
+      resolve(client);
+    });
+  });
+
+  const ann = await open('Ann');
+  const ben = await open('Ben');
+  await new Promise((r) => setTimeout(r, 100));
+
+  ann.ws.send(JSON.stringify({ type: 'face_snapshot', jpeg: 'x'.repeat(150_001) }));
+  await new Promise((r) => setTimeout(r, 100));
+
+  assert.strictEqual(ben.facecam, null);
+  assert.ok(logs.some((line) => line.includes('rejected oversized face_snapshot')));
+
+  ann.ws.close();
+  ben.ws.close();
+  server.close();
+});
+
 test('abandon_game ends a match so a new player can join', async () => {
   const port = 17779;
   const server = createGameServer({ port, log: () => {} });

@@ -123,6 +123,7 @@ function sendVitals() {
 // ---- face cams ----------------------------------------------------------------
 
 const FACE_CAM_SIZE = 200;
+let faceCamTimer = null;
 const faceCamCanvas = document.createElement('canvas');
 faceCamCanvas.width = FACE_CAM_SIZE;
 faceCamCanvas.height = FACE_CAM_SIZE;
@@ -141,6 +142,11 @@ function sendFaceSnapshot() {
   const jpeg = faceCamCanvas.toDataURL('image/jpeg', 0.65);
   if (ui.state && ui.state.me) setFaceCam(ui.state.me.id, jpeg);
   if (ui.net) ui.net.send('face_snapshot', { jpeg });
+}
+
+function setFaceCamActive(active) {
+  if (active && !faceCamTimer) faceCamTimer = setInterval(sendFaceSnapshot, 250);
+  if (!active && faceCamTimer) { clearInterval(faceCamTimer); faceCamTimer = null; }
 }
 
 // ---- toasts -----------------------------------------------------------------
@@ -215,6 +221,7 @@ function onPhaseChange(prev, phase) {
   if (phase === 'roles') sound.roleReveal();
   if (phase === 'discussion') sound.alarm();
   if (phase === 'gameover') sound.fanfare();
+  setFaceCamActive(phase === 'discussion' || phase === 'voting');
 }
 
 function handleEvent(event) {
@@ -684,7 +691,6 @@ async function boot() {
   };
 
   setInterval(sendVitals, 1000);
-  setInterval(sendFaceSnapshot, 33);
   setInterval(() => {
     if (ui.map) renderMap();
   }, 150);
