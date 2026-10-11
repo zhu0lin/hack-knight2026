@@ -7,6 +7,7 @@ const WebSocket = require('ws');
 const { Game, createGameServer } = require('../src/server/game-server');
 const MAP = require('../src/shared/map');
 const { gameSocketUrl } = require('../src/socket-url');
+const RULES = require('../src/shared/minigame-rules');
 
 function lockedVitals(bpm, baseline = 70) {
   return { bpm, confidence: 90, baseline, locked: true, hint: null };
@@ -382,6 +383,34 @@ test('abandon_game ends a match so a new player can join', async () => {
 
   ws.close();
   server.close();
+});
+
+test('card swipe only accepts a moderate pace', () => {
+  assert.strictEqual(RULES.judgeSwipe(RULES.SWIPE_MIN_MS - 1), 'too_fast');
+  assert.strictEqual(RULES.judgeSwipe((RULES.SWIPE_MIN_MS + RULES.SWIPE_MAX_MS) / 2), 'ok');
+  assert.strictEqual(RULES.judgeSwipe(RULES.SWIPE_MAX_MS + 1), 'too_slow');
+});
+
+test('wires must match colors and follow the panel order', () => {
+  const { left, right, sequence } = RULES.wirePuzzle();
+  for (const list of [left, right, sequence]) assert.deepStrictEqual([...list].sort(), [...RULES.WIRE_COLORS].sort());
+  const [first, second] = sequence;
+  assert.strictEqual(RULES.checkWire(sequence, 0, first, second), 'wrong_color');
+  assert.strictEqual(RULES.checkWire(sequence, 0, second, second), 'wrong_order');
+  assert.strictEqual(RULES.checkWire(sequence, 0, first, first), 'ok');
+  assert.strictEqual(RULES.checkWire(sequence, 1, second, second), 'ok');
+});
+
+test('course waypoints are reached in order and straying resets', () => {
+  const W = RULES.COURSE_WAYPOINTS;
+  for (const w of W) assert.ok(w.x >= 0 && w.x <= 1 && w.y >= 0 && w.y <= 1);
+
+  assert.deepStrictEqual(RULES.courseStep(0, W[2]), { index: 0, status: 'off_course' }, 'skipped a waypoint');
+  const mid = { x: (W[0].x + W[1].x) / 2, y: (W[0].y + W[1].y) / 2 };
+  assert.deepStrictEqual(RULES.courseStep(0, mid), { index: 0, status: 'moving' });
+  assert.deepStrictEqual(RULES.courseStep(0, W[1]), { index: 1, status: 'advanced' });
+  assert.strictEqual(RULES.courseStep(0, { x: mid.x + 0.2, y: mid.y }).status, 'off_course');
+  assert.deepStrictEqual(RULES.courseStep(W.length - 2, W[W.length - 1]), { index: W.length - 1, status: 'done' });
 });
 
 test('join addresses become the right websocket URL', () => {
