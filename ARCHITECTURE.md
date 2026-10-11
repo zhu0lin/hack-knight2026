@@ -49,6 +49,7 @@ src/renderer/map-view.js  Canvas map for the tasks phase: WASD movement, collisi
 src/renderer/vitals.js    SmartSpectra renderer SDK wrapper + simulated source + baseline calibration
 src/renderer/minigames.js Mouse minigames for the swipe, wires and course tasks
 src/shared/minigame-rules.js Pure pass/fail rules for the minigames (tested)
+src/shared/expressions.js Expression codes, emoji, top-expression pick and smoothing (tested)
 src/renderer/net.js       WebSocket client with reconnect, connect timeout, and join diagnostics
 src/renderer/sound.js     WebAudio sound effects (no audio files)
 src/renderer/styles.css   All styling
@@ -78,7 +79,18 @@ The SDK is split across Electron's processes. This is the vendor-recommended lay
 
 Renderer SDK modules are CommonJS, so the renderer is bundled with **esbuild** into a single IIFE (`dist/renderer.js`). There is no framework (no React/Vue): screens are template-string functions rendered with `innerHTML`.
 
-We request only `MetricType.PULSE_RATE`. HRV needs a 60s window and breathing needs 30s with a stable camera; neither fits the game loop, so they were deliberately left out.
+We request `MetricType.PULSE_RATE` and `MetricType.EXPRESSIONS`. HRV needs a 60s window and breathing needs 30s with a stable camera; neither fits the game loop, so they were deliberately left out.
+
+### Facial expressions
+
+- We use the SDK's built-in expression classifier rather than computing emotions from the 478 `FACE_LANDMARKS` ourselves. Each metrics frame carries `metrics.face.expression[].scores`, a list of `{type, confidence}` with `ExpressionType` codes 1-8 (angry, contempt, disgust, fear, happy, neutral, sad, surprise).
+- `src/shared/expressions.js` holds the code-to-name-and-emoji map, `topExpression` (highest confidence, at least 45), and `ExpressionTracker`. The tracker only switches the shown emotion after a new one has led for 500 ms, so the bubble doesn't flicker, and it goes stale after 3 s without data.
+- Clients send `expression {name}` on change and every 2 s. The server validates the name, stores it with a timestamp, and hides it once it is 4 s old or the player is dead.
+- Expressions ride on the 15 Hz `positions` tuples, so the map updates without full state broadcasts. They are also on `publicPlayer.expression`, for meeting cards.
+- The local player's bubble comes straight from the local tracker, not from the server.
+- The same head bubble shows the player's BPM. Remote BPM comes from `state.players[].vitals.bpm` (about 1 Hz), so an impostor's fake vitals show there too. The local player sees their real reading. The bubble turns red on a spike.
+- Simulated mode holds `1`-`4` for happy, surprise, angry and sad; `H` shows fear. Bots emote on their own and look scared or surprised when accused.
+- If the API key's plan doesn't return expression data, the sidebar shows `--` and no bubbles appear; nothing else is affected.
 
 The CSP in `index.html` must allow `worker-src blob:` (the SDK runs a blob worker) and `connect-src ws: wss:` (game traffic).
 
@@ -107,9 +119,9 @@ With no `PRESAGE_API_KEY`, or with `VV_SIM=1`, `vitals.js` uses a simulated sour
 
 WebSocket with JSON messages. Every message has a `type`.
 
-Client to server: `join {name, clientId}`, `hr_update {vitals}`, `move {x, y}`, `start_game`, `add_bot`, `remove_bot`, `complete_task {taskId}`, `kill {targetId}`, `vent {action: 'enter' | 'next' | 'prev' | 'exit'}`, `call_meeting`, `report {bodyId}`, `accuse {targetId}`, `fake_vitals`, `vote {targetId | 'skip'}`, `skip_phase`, `play_again`, `abandon_game`.
+Client to server: `join {name, clientId}`, `hr_update {vitals}`, `expression {name | null}`, `move {x, y}`, `start_game`, `add_bot`, `remove_bot`, `complete_task {taskId}`, `kill {targetId}`, `vent {action: 'enter' | 'next' | 'prev' | 'exit'}`, `call_meeting`, `report {bodyId}`, `accuse {targetId}`, `fake_vitals`, `vote {targetId | 'skip'}`, `skip_phase`, `play_again`, `abandon_game`.
 
-Server to client: `welcome {playerId}`, `state {state}` (full per-player view), `positions {positions: [[id, x, y], ...]}`, `event {event}` (toasts and sounds), `error {message}`, `reset`.
+Server to client: `welcome {playerId}`, `state {state}` (full per-player view), `positions {positions: [[id, x, y, expression], ...]}` (older servers send 3-element tuples; the client tolerates both), `event {event}` (toasts and sounds), `error {message}`, `reset`.
 
 Cadence (`createGameServer`):
 - `game.tick()` runs every 66 ms (`TICK_MS`); it advances timers and bots.

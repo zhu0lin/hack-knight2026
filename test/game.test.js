@@ -8,6 +8,7 @@ const { Game, createGameServer } = require('../src/server/game-server');
 const MAP = require('../src/shared/map');
 const { gameSocketUrl } = require('../src/socket-url');
 const RULES = require('../src/shared/minigame-rules');
+const EXPR = require('../src/shared/expressions');
 
 function lockedVitals(bpm, baseline = 70) {
   return { bpm, confidence: 90, baseline, locked: true, hint: null };
@@ -384,12 +385,14 @@ test('LAN server relays heart rate and positions between connected clients', asy
   const ben = await open('Ben');
   await new Promise((r) => setTimeout(r, 100));
   ann.ws.send(JSON.stringify({ type: 'hr_update', vitals: lockedVitals(84, 72) }));
+  ann.ws.send(JSON.stringify({ type: 'expression', name: 'surprise' }));
   await new Promise((r) => setTimeout(r, 1300));
 
   const seen = ben.state.players.find((p) => p.name === 'Ann');
   assert.strictEqual(seen.vitals.bpm, 84);
   assert.strictEqual(seen.vitals.delta, 12);
   assert.strictEqual(seen.vitals.spike, true);
+  assert.strictEqual(seen.expression, 'surprise');
   assert.strictEqual(ben.state.hostId, ann.id);
 
   ann.ws.send(JSON.stringify({ type: 'add_bot' }));
@@ -500,6 +503,63 @@ test('abandon_game ends a match so a new player can join', async () => {
 
   ws.close();
   server.close();
+});
+
+test('topExpression picks the most confident SDK expression above the threshold', () => {
+  assert.strictEqual(EXPR.topExpression([{ type: 5, confidence: 80 }, { type: 8, confidence: 60 }]), 'happy');
+  assert.strictEqual(EXPR.topExpression([{ type: 5, confidence: 30 }, { type: 7, confidence: 40 }]), null);
+  assert.strictEqual(EXPR.topExpression([{ type: 99, confidence: 90 }]), null);
+  assert.strictEqual(EXPR.topExpression(undefined), null);
+  assert.strictEqual(EXPR.topExpression([{ type: 'NEUTRAL', confidence: 88 }, { type: 'SAD', confidence: 5 }]), 'neutral');
+  assert.strictEqual(EXPR.topExpression([{ type: 'BOGUS', confidence: 99 }]), null);
+});
+
+test('expression tracker ignores blips, switches after the hold time, and goes stale', () => {
+  const t = new EXPR.ExpressionTracker();
+  t.push('neutral', 0);
+  assert.strictEqual(t.current(0), 'neutral');
+  t.push('happy', 100);
+  t.push('neutral', 150);
+  t.push('neutral', 400);
+  assert.strictEqual(t.current(400), 'neutral', 'one-frame blip changed the face');
+  t.push('happy', 500);
+  t.push('happy', 500 + EXPR.HOLD_MS - 1);
+  assert.strictEqual(t.current(1000), 'neutral');
+  t.push('happy', 500 + EXPR.HOLD_MS);
+  assert.strictEqual(t.current(1000), 'happy');
+  assert.strictEqual(t.current(1000 + EXPR.STALE_MS + 1), null);
+});
+
+test('server stores valid expressions and hides stale or dead ones', () => {
+  let now = 1_000_000;
+  const game = new Game({}, () => now);
+  const a = game.addPlayer({ clientId: 'a', name: 'Ann' });
+  const b = game.addPlayer({ clientId: 'b', name: 'Ben' });
+  game.setExpression(a.id, 'grumpy');
+  assert.strictEqual(game.displayedExpression(a), null, 'accepted an unknown name');
+  game.setExpression(a.id, 'happy');
+  assert.strictEqual(game.positions(b.id).find(([id]) => id === a.id)[3], 'happy');
+  assert.strictEqual(game.viewFor(b.id).players.find((p) => p.id === a.id).expression, 'happy');
+  now += 5000;
+  assert.strictEqual(game.displayedExpression(a), null, 'stale expression still shown');
+  game.setExpression(a.id, 'sad');
+  a.alive = false;
+  assert.strictEqual(game.displayedExpression(a), null, 'dead player still emoting');
+});
+
+test('bots show an expression and look worried when accused', () => {
+  const game = new Game({});
+  const host = game.addPlayer({ clientId: 'h', name: 'Host' });
+  game.addBot();
+  game.addBot();
+  game.start(host.id);
+  const bot = game.bots()[0];
+  game.tick();
+  assert.ok(EXPR.isExpression(game.displayedExpression(bot)));
+  game.startMeeting('test');
+  game.accuse(host.id, bot.id);
+  game.tick();
+  assert.ok(['fear', 'surprise'].includes(game.displayedExpression(bot)));
 });
 
 test('card swipe only accepts a moderate pace', () => {
