@@ -4,7 +4,7 @@ import {
 } from '../shared/map.js';
 
 const SEND_INTERVAL_MS = 66;
-const VIEW_HEIGHT = 720;
+const VIEW_HEIGHT = 640;
 
 const STARS = Array.from({ length: 220 }, () => ({
   x: Math.random() * WORLD.width,
