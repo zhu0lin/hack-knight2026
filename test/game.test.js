@@ -277,6 +277,89 @@ test('bots walk the map, do tasks, and play a full game to completion', () => {
   assert.ok(['crew', 'impostor'].includes(game.winner.team));
 });
 
+test('kill redistributes a victim\'s unfinished tasks to survivors, unfinished total unchanged', () => {
+  const game = new Game({});
+  const players = ['Ann', 'Ben', 'Cat', 'Dan'].map((n) => game.addPlayer({ clientId: n, name: n }));
+  game.start(players[0].id);
+  game.advance();
+  const impostor = players.find((p) => p.role === 'impostor');
+  const [victim, witness] = players.filter((p) => p.role === 'crew');
+
+  victim.tasks = [
+    { id: 't1', x: 0, y: 0, done: true },
+    { id: 't2', x: 0, y: 0, done: false },
+    { id: 't3', x: 0, y: 0, done: false },
+  ];
+  const before = game.taskProgress();
+
+  place(impostor, 200, 800);
+  place(victim, 250, 800);
+  impostor.killReadyAt = 0;
+  game.kill(impostor.id, victim.id);
+  assert.strictEqual(victim.alive, false);
+
+  assert.deepStrictEqual(victim.tasks, [{ id: 't1', x: 0, y: 0, done: true }]);
+  assert.ok(witness.alive);
+  const survivorTasks = [...game.crewAlive().flatMap((p) => p.tasks)];
+  assert.ok(survivorTasks.some((t) => t.id === 't2'));
+  assert.ok(survivorTasks.some((t) => t.id === 't3'));
+  assert.strictEqual(game.taskProgress(), before);
+});
+
+test('ejection redistributes the ejected crewmate\'s unfinished tasks to survivors', () => {
+  const { game, a, b, c } = startedGame();
+  const crew = [a, b, c].filter((p) => p.role === 'crew');
+  const [victim] = crew;
+  victim.tasks = [
+    { id: 't1', x: 0, y: 0, done: false },
+    { id: 't2', x: 0, y: 0, done: true },
+  ];
+  const before = game.taskProgress();
+
+  pressButton(game, a);
+  game.advance();
+  assert.strictEqual(game.phase, 'voting');
+  for (const p of game.alive()) game.vote(p.id, victim.id);
+  assert.strictEqual(game.phase, 'reveal');
+  assert.strictEqual(victim.alive, false);
+
+  assert.deepStrictEqual(victim.tasks, [{ id: 't2', x: 0, y: 0, done: true }]);
+  const survivorTasks = game.crewAlive().flatMap((p) => p.tasks);
+  assert.ok(survivorTasks.some((t) => t.id === 't1'));
+  assert.strictEqual(game.taskProgress(), before);
+});
+
+test('killing the last crew member does not throw and impostor wins', () => {
+  const game = new Game({});
+  const a = game.addPlayer({ clientId: 'a', name: 'Ann' });
+  const b = game.addPlayer({ clientId: 'b', name: 'Ben' });
+  const c = game.addPlayer({ clientId: 'c', name: 'Cat' });
+  game.start(a.id);
+  game.advance();
+  const impostor = [a, b, c].find((p) => p.role === 'impostor');
+  const crew = [a, b, c].filter((p) => p.role === 'crew');
+  // force second crew member dead already so one kill ends the game
+  crew[1].alive = false;
+  impostor.killReadyAt = 0;
+  place(impostor, crew[0].x + 30, crew[0].y);
+  assert.doesNotThrow(() => game.kill(impostor.id, crew[0].id));
+  assert.strictEqual(game.winner.team, 'impostor');
+});
+
+test('impostor death does not redistribute tasks to crew', () => {
+  const { game, impostor, crew } = startedGame();
+  impostor.tasks = [{ id: 'fake1', x: 0, y: 0, done: false }];
+  const lengthsBefore = crew.map((p) => p.tasks.length);
+
+  pressButton(game, crew[0]);
+  game.advance();
+  for (const p of game.alive()) game.vote(p.id, impostor.id);
+  assert.strictEqual(game.lastEjection.wasImpostor, true);
+
+  const lengthsAfter = crew.map((p) => p.tasks.length);
+  assert.deepStrictEqual(lengthsAfter, lengthsBefore);
+});
+
 test('LAN server relays heart rate and positions between connected clients', async () => {
   const port = 17777;
   const server = createGameServer({ port, log: () => {} });

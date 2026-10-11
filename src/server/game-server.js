@@ -199,6 +199,16 @@ class Game {
   impostorsAlive() { return this.alive().filter((p) => p.role === 'impostor'); }
   crewAlive() { return this.alive().filter((p) => p.role === 'crew'); }
 
+  redistributeTasks(deadPlayer) {
+    if (deadPlayer.role !== 'crew') return;
+    const unfinished = deadPlayer.tasks.filter((t) => !t.done);
+    if (!unfinished.length) return;
+    const survivors = this.crewAlive();
+    if (!survivors.length) return;
+    unfinished.forEach((task, i) => survivors[i % survivors.length].tasks.push(task));
+    deadPlayer.tasks = deadPlayer.tasks.filter((t) => t.done);
+  }
+
   taskProgress() {
     const crew = [...this.players.values()].filter((p) => p.role === 'crew');
     const total = crew.reduce((n, p) => n + p.tasks.length, 0);
@@ -274,6 +284,7 @@ class Game {
     if (this.clock() < killer.killReadyAt) return;
     if (MAP.distance(killer, target) > MAP.KILL_RANGE + RANGE_SLACK) return;
     target.alive = false;
+    this.redistributeTasks(target);
     killer.killReadyAt = this.clock() + this.config.killCooldownMs;
     this.bodies.push({ id: crypto.randomUUID().slice(0, 8), playerId: target.id, x: target.x, y: target.y });
     this.emit({ type: 'kill', private: true, playerId: target.id });
@@ -361,6 +372,7 @@ class Game {
     } else {
       const ejected = this.players.get(topId);
       ejected.alive = false;
+      this.redistributeTasks(ejected);
       this.lastEjection = { playerId: ejected.id, wasImpostor: ejected.role === 'impostor', tie: false, votes };
       this.emit({
         type: 'ejection',
