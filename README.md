@@ -7,6 +7,7 @@ On a normal Wi-Fi network, one laptop hosts and the others join it. On a campus 
 ## How it works
 
 - **One camera per player.** SmartSpectra measures one face per camera, so every player uses their own laptop.
+- **Camera selection.** If 2+ webcams are detected, a **Camera** dropdown in the left sidebar (under the video preview) lets you pick which one to use.
 - **Calibration.** In the lobby each player sits still for about 20 seconds. The app records their resting pulse (the "baseline").
 - **Spikes.** During meetings, a player whose pulse rises 10+ BPM above their resting rate gets a red glow and a sound cue.
 - **Accuse.** Accusing someone puts them in the spotlight, so everyone watches their pulse react.
@@ -68,7 +69,18 @@ To test two windows on one laptop (only one can use the camera):
 
 ```bash
 npm start                                 # window 1: real camera, host
+```
+
+macOS/Linux:
+
+```bash
 VV_SIM=1 VV_PROFILE=2 npm start           # window 2: simulated, join "localhost"
+```
+
+Windows (PowerShell):
+
+```powershell
+$env:VV_SIM=1; $env:VV_PROFILE=2; npm start   # window 2: simulated, join "localhost"
 ```
 
 ## Game flow

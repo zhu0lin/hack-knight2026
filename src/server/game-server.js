@@ -10,15 +10,19 @@ const DEFAULT_CONFIG = {
   minPlayers: 3,
   tasksPerPlayer: 3,
   taskPhaseMs: 150_000,
-  discussionMs: 60_000,
-  votingMs: 30_000,
+  discussionMs: 45_000,
+  votingMs: 20_000,
   revealMs: 7_000,
   roleRevealMs: 5_000,
   killCooldownMs: 25_000,
   fakeVitalsMs: 25_000,
   spikeBpm: 10,
   vitalsStaleMs: 15_000,
-  botTaskMs: 3_000,
+  botTaskMinMs: 5_000,
+  botTaskMaxMs: 11_000,
+  maxEmergencyMeetings: 1,
+  meetingCooldownMs: 28_000,
+  spotlightLockMs: 9_000,
 };
 
 const TICK_MS = 66;
@@ -26,6 +30,7 @@ const STATE_EVERY_TICKS = 15;
 const MAX_MOVE_PER_MESSAGE = 120;
 const RANGE_SLACK = 15;
 const EXPRESSION_STALE_MS = 4000;
+const MAX_FACE_SNAPSHOT_CHARS = 150_000;
 
 const COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c', '#ff6fb5', '#ecf0f1', '#8d6e63'];
 
@@ -56,6 +61,8 @@ class Game {
     this.phaseEndsAt = null;
     this.meetingNumber = 0;
     this.meetingCaller = null;
+    this.meetingReadyAt = 0;
+    this.meetingKind = null;
     this.spotlight = null;
     this.lastEjection = null;
     this.winner = null;
@@ -107,6 +114,7 @@ class Game {
     Object.assign(p, {
       role: null, alive: true, tasks: [], vote: null, killReadyAt: 0,
       fakeUntil: 0, fakeBpm: null, fakeUsedInMeeting: -1, spiking: false, ventId: null,
+      emergencyMeetingsUsed: 0, readyToVote: false,
     });
     if (p.isBot) p.nav = { path: [], workingOn: null, workUntil: 0 };
   }
@@ -212,6 +220,16 @@ class Game {
   impostorsAlive() { return this.alive().filter((p) => p.role === 'impostor'); }
   crewAlive() { return this.alive().filter((p) => p.role === 'crew'); }
 
+  redistributeTasks(deadPlayer) {
+    if (deadPlayer.role !== 'crew') return;
+    const unfinished = deadPlayer.tasks.filter((t) => !t.done);
+    if (!unfinished.length) return;
+    const survivors = this.crewAlive();
+    if (!survivors.length) return;
+    unfinished.forEach((task, i) => survivors[i % survivors.length].tasks.push(task));
+    deadPlayer.tasks = deadPlayer.tasks.filter((t) => t.done);
+  }
+
   taskProgress() {
     const crew = [...this.players.values()].filter((p) => p.role === 'crew');
     const total = crew.reduce((n, p) => n + p.tasks.length, 0);
@@ -222,17 +240,23 @@ class Game {
   displayedVitals(p, now = this.clock()) {
     const v = p.vitals;
     if (!v.at || now - v.at > this.config.vitalsStaleMs) {
-      return { bpm: null, baseline: v.baseline, delta: null, spike: false, locked: v.locked, hint: 'No signal' };
+      return { bpm: null, baseline: v.baseline, delta: null, deltaSinceAccusation: null, spike: false, locked: v.locked, hint: 'No signal' };
     }
     let bpm = v.bpm;
     if (p.fakeUntil > now && p.fakeBpm !== null) {
       bpm = p.fakeBpm + Math.round((Math.random() - 0.5) * 3);
     }
     const delta = bpm !== null && v.baseline !== null ? bpm - v.baseline : null;
+    const spot = this.spotlight;
+    const deltaSinceAccusation =
+      spot && spot.targetId === p.id && spot.bpmAtAccusation != null && bpm !== null
+        ? bpm - spot.bpmAtAccusation
+        : null;
     return {
       bpm,
       baseline: v.baseline,
       delta,
+      deltaSinceAccusation,
       spike: v.locked && delta !== null && delta >= this.config.spikeBpm,
       locked: v.locked,
       hint: v.hint,
@@ -287,6 +311,7 @@ class Game {
     if (this.clock() < killer.killReadyAt) return;
     if (MAP.distance(killer, target) > MAP.KILL_RANGE + RANGE_SLACK) return;
     target.alive = false;
+    this.redistributeTasks(target);
     killer.killReadyAt = this.clock() + this.config.killCooldownMs;
     this.bodies.push({ id: crypto.randomUUID().slice(0, 8), playerId: target.id, x: target.x, y: target.y });
     this.emit({ type: 'kill', private: true, playerId: target.id });
@@ -296,28 +321,34 @@ class Game {
   callMeeting(id) {
     const p = this.players.get(id);
     if (this.phase !== 'tasks' || !p || !p.alive || p.ventId) return;
+    if (this.clock() < this.meetingReadyAt) return;
+    if (p.emergencyMeetingsUsed >= this.config.maxEmergencyMeetings) return;
     if (MAP.distance(p, MAP.EMERGENCY_BUTTON) > MAP.BUTTON_RANGE + RANGE_SLACK) return;
-    this.startMeeting(`${p.name} pressed the emergency button`);
+    p.emergencyMeetingsUsed += 1;
+    this.startMeeting(`${p.name} pressed the emergency button`, 'button');
   }
 
   report(id, bodyId) {
     const p = this.players.get(id);
     const body = this.bodies.find((b) => b.id === bodyId);
     if (this.phase !== 'tasks' || !p || !p.alive || p.ventId || !body) return;
+    if (this.clock() < this.meetingReadyAt) return;
     if (MAP.distance(p, body) > MAP.REPORT_RANGE + RANGE_SLACK) return;
     const victim = this.players.get(body.playerId);
-    this.startMeeting(`${p.name} found ${victim ? victim.name : 'someone'}'s body`);
+    this.startMeeting(`${p.name} found ${victim ? victim.name : 'someone'}'s body`, 'body');
   }
 
-  startMeeting(reason) {
+  startMeeting(reason, kind) {
     this.meetingNumber += 1;
     this.meetingCaller = reason;
+    this.meetingKind = kind;
     this.spotlight = null;
     this.bodies = [];
     for (const p of this.players.values()) {
       p.vote = null;
       p.spiking = false;
       p.ventId = null;
+      p.readyToVote = false;
     }
     this.setPhase('discussion', this.config.discussionMs);
     this.emit({ type: 'meeting', text: reason });
@@ -328,7 +359,12 @@ class Game {
     const target = this.players.get(targetId);
     if (!by || !target || !by.alive || !target.alive) return;
     if (this.phase !== 'discussion' && this.phase !== 'voting') return;
-    this.spotlight = { targetId, byId: id, at: this.clock() };
+    if (this.spotlight && this.spotlight.targetId !== targetId &&
+        this.clock() - this.spotlight.at < this.config.spotlightLockMs) return;
+    this.spotlight = {
+      targetId, byId: id, at: this.clock(),
+      bpmAtAccusation: this.displayedVitals(target, this.clock()).bpm,
+    };
     this.emit({ type: 'accuse', targetId, text: `${by.name} accuses ${target.name}! Watch their pulse...` });
   }
 
@@ -355,6 +391,14 @@ class Game {
     if (this.alive().every((q) => q.vote !== null)) this.tallyVotes();
   }
 
+  readyToVote(id) {
+    const p = this.players.get(id);
+    if (!p || !p.alive || this.phase !== 'discussion' || p.readyToVote) return;
+    p.readyToVote = true;
+    this.emit({ type: 'ready_vote', text: `${p.name} is ready to vote` });
+    if (this.alive().every((q) => q.readyToVote)) this.advance();
+  }
+
   tallyVotes() {
     const counts = new Map();
     for (const p of this.alive()) {
@@ -374,6 +418,7 @@ class Game {
     } else {
       const ejected = this.players.get(topId);
       ejected.alive = false;
+      this.redistributeTasks(ejected);
       this.lastEjection = { playerId: ejected.id, wasImpostor: ejected.role === 'impostor', tie: false, votes };
       this.emit({
         type: 'ejection',
@@ -393,9 +438,10 @@ class Game {
     switch (this.phase) {
       case 'roles':
         this.setPhase('tasks', this.config.taskPhaseMs);
+        this.meetingReadyAt = this.clock() + this.config.meetingCooldownMs;
         break;
       case 'tasks':
-        this.startMeeting('The shift timer ran out');
+        this.startMeeting('The shift timer ran out', 'timeout');
         break;
       case 'discussion':
         this.setPhase('voting', this.config.votingMs);
@@ -411,6 +457,7 @@ class Game {
           }
           this.resetPositions();
           this.setPhase('tasks', this.config.taskPhaseMs);
+          this.meetingReadyAt = this.clock() + this.config.meetingCooldownMs;
         }
         break;
       default:
@@ -457,6 +504,7 @@ class Game {
     this.lastTickAt = now;
     this.tickBotVitals(now, dt);
     if (this.phase === 'tasks') this.tickBotsOnMap(now, dt);
+    if (this.phase === 'discussion') this.tickBotReady(dt);
     if (this.phase === 'voting') this.tickBotVotes(dt);
     if (this.phaseEndsAt && now >= this.phaseEndsAt) this.advance();
     if (this.phase === 'discussion' || this.phase === 'voting') {
@@ -550,12 +598,20 @@ class Game {
       const atTask = bot.tasks.find((t) => !t.done && MAP.distance(bot, t) <= MAP.USE_RANGE);
       if (atTask) {
         nav.workingOn = atTask.id;
-        nav.workUntil = now + this.config.botTaskMs;
+        const { botTaskMinMs, botTaskMaxMs } = this.config;
+        nav.workUntil = now + botTaskMinMs + Math.random() * (botTaskMaxMs - botTaskMinMs);
         continue;
       }
       const next = bot.tasks.find((t) => !t.done);
       const dest = next || MAP.TASKS[Math.floor(Math.random() * MAP.TASKS.length)];
       nav.path = MAP.route(bot, dest);
+    }
+  }
+
+  tickBotReady(dt) {
+    for (const bot of this.bots()) {
+      if (!bot.alive || bot.readyToVote || Math.random() > dt * 0.2) continue;
+      this.readyToVote(bot.id);
     }
   }
 
@@ -590,6 +646,7 @@ class Game {
       isHost: p.id === this.hostId,
       role: revealRoles || ejected ? p.role : null,
       voted: p.vote !== null,
+      readyToVote: p.readyToVote,
       x: Math.round(p.x),
       y: Math.round(p.y),
       vitals: this.displayedVitals(p, now),
@@ -606,6 +663,7 @@ class Game {
       hostId: this.hostId,
       meetingNumber: this.meetingNumber,
       meetingCaller: this.meetingCaller,
+      meetingKind: this.meetingKind,
       spotlight: this.spotlight,
       lastEjection: this.phase === 'reveal' || this.phase === 'gameover' ? this.lastEjection : null,
       winner: this.winner,
@@ -623,6 +681,7 @@ class Game {
         alive: me.alive,
         tasks: me.tasks,
         vote: me.vote,
+        readyToVote: me.readyToVote,
         killReadyAt: me.role === 'impostor' ? me.killReadyAt : null,
         fakeAvailable: me.role === 'impostor' && me.fakeUsedInMeeting !== this.meetingNumber,
         fakeUntil: me.role === 'impostor' ? me.fakeUntil : 0,
@@ -700,6 +759,18 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
         switch (msg.type) {
           case 'hr_update': game.updateVitals(playerId, msg.vitals || {}); return;
           case 'expression': game.setExpression(playerId, msg.name ?? null); return;
+          case 'face_snapshot': {
+            if (typeof msg.jpeg !== 'string') return;
+            if (msg.jpeg.length > MAX_FACE_SNAPSHOT_CHARS) {
+              log(`[vital-verdict] rejected oversized face_snapshot from ${remote} (${msg.jpeg.length} chars)`);
+              return;
+            }
+            const payload = JSON.stringify({ type: 'facecam', playerId, jpeg: msg.jpeg });
+            for (const sock of sockets.keys()) {
+              if (sock !== ws && sock.readyState === sock.OPEN) sock.send(payload);
+            }
+            return;
+          }
           case 'move': game.move(playerId, Number(msg.x), Number(msg.y)); return;
           case 'start_game': game.start(playerId); break;
           case 'add_bot': if (playerId === game.hostId) game.addBot(); break;
@@ -712,6 +783,7 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
           case 'accuse': game.accuse(playerId, msg.targetId); break;
           case 'fake_vitals': game.fakeVitals(playerId); break;
           case 'vote': game.vote(playerId, msg.targetId); break;
+          case 'ready_vote': game.readyToVote(playerId); break;
           case 'skip_phase': game.skipPhase(playerId); break;
           case 'play_again': game.playAgain(playerId); break;
           default:

@@ -1,4 +1,4 @@
-import { createVitals } from './vitals.js';
+import { createVitals, listCameras } from './vitals.js';
 import { connect } from './net.js';
 import { gameSocketUrl } from '../socket-url.js';
 import * as sound from './sound.js';
@@ -30,6 +30,7 @@ const ui = {
   history: new Map(),
   lastPhase: null,
   map: null,
+  faceCams: new Map(), // playerId -> jpeg data URL
 };
 
 const clientId = sessionStorage.getItem('vv-client-id') || crypto.randomUUID();
@@ -55,6 +56,10 @@ function avatar(color, { dead = false, size = 64 } = {}) {
       <polyline points="20,23 26,23 29,18 33,28 36,21 38,23 44,23" fill="none" stroke="#5ef0b4" stroke-width="2" stroke-linejoin="round" />
       ${dead ? '<line x1="16" y1="10" x2="48" y2="54" stroke="#0b0f1a" stroke-width="4" />' : ''}
     </svg>`;
+}
+
+function faceCamUrl(playerId) {
+  return ui.faceCams.get(playerId) || null;
 }
 
 function sparkline(playerId, color) {
@@ -124,6 +129,35 @@ function sendExpression() {
   ui.net.send('expression', { name: ui.myVitals.expression });
 }
 
+// ---- face cams ----------------------------------------------------------------
+
+const FACE_CAM_SIZE = 200;
+let faceCamTimer = null;
+const faceCamCanvas = document.createElement('canvas');
+faceCamCanvas.width = FACE_CAM_SIZE;
+faceCamCanvas.height = FACE_CAM_SIZE;
+const faceCamCtx = faceCamCanvas.getContext('2d');
+
+function setFaceCam(playerId, jpeg) {
+  if (!playerId || !jpeg) return;
+  ui.faceCams.set(playerId, jpeg);
+}
+
+function sendFaceSnapshot() {
+  const video = $('#cam');
+  if (!video.videoWidth) return;
+  const size = Math.min(video.videoWidth, video.videoHeight);
+  faceCamCtx.drawImage(video, (video.videoWidth - size) / 2, (video.videoHeight - size) / 2, size, size, 0, 0, FACE_CAM_SIZE, FACE_CAM_SIZE);
+  const jpeg = faceCamCanvas.toDataURL('image/jpeg', 0.65);
+  if (ui.state && ui.state.me) setFaceCam(ui.state.me.id, jpeg);
+  if (ui.net) ui.net.send('face_snapshot', { jpeg });
+}
+
+function setFaceCamActive(active) {
+  if (active && !faceCamTimer) faceCamTimer = setInterval(sendFaceSnapshot, 250);
+  if (!active && faceCamTimer) { clearInterval(faceCamTimer); faceCamTimer = null; }
+}
+
 // ---- toasts -----------------------------------------------------------------
 
 function toast(text, kind = 'info') {
@@ -174,6 +208,7 @@ function joinServer(url, name) {
     onPositions: (positions) => {
       if (ui.map) ui.map.setPositions(positions);
     },
+    onFaceCam: setFaceCam,
     onEvent: handleEvent,
     onError: (message) => toast(message, 'warn'),
   });
@@ -195,6 +230,7 @@ function onPhaseChange(prev, phase) {
   if (phase === 'roles') sound.roleReveal();
   if (phase === 'discussion') sound.alarm();
   if (phase === 'gameover') sound.fanfare();
+  setFaceCamActive(phase === 'discussion' || phase === 'voting');
 }
 
 function handleEvent(event) {
@@ -526,21 +562,24 @@ function vitalsCard(p, s) {
   const v = p.vitals;
   const spot = s.spotlight && s.spotlight.targetId === p.id;
   const deltaText = v.delta === null ? (v.locked ? '' : 'not calibrated') : `${v.delta > 0 ? '+' : ''}${v.delta} vs resting`;
+  const accusedDeltaText = v.deltaSinceAccusation === null ? null : `${v.deltaSinceAccusation > 0 ? '+' : ''}${v.deltaSinceAccusation} since accused`;
   const voting = s.phase === 'voting';
   const canAct = me.alive && p.alive;
+  const face = faceCamUrl(p.id);
   return `
     <div class="vitals-card ${p.alive ? '' : 'dead'} ${v.spike ? 'spike' : ''} ${spot ? 'spotlight' : ''}">
       ${spot ? '<div class="spot-tag">ACCUSED</div>' : ''}
-      <div class="vc-head">
-        ${avatar(p.color, { dead: !p.alive, size: 48 })}
-        <div>
-          <div class="pname">${esc(p.name)}${p.id === me.id ? ' (you)' : ''}${p.alive && p.expression ? ` <span class="expr">${emojiFor(p.expression)}</span>` : ''}</div>
-          <div class="muted">${p.alive ? (p.voted ? 'voted' : '') : 'out'}</div>
+      <div class="face-tile" style="${face ? `background-image:url('${face}')` : `background:${p.color}`}">
+        ${!face ? `<div class="face-fallback">${esc((p.name[0] || '?').toUpperCase())}</div>` : ''}
+        <div class="face-caption">
+          <span class="pname">${esc(p.name)}${p.id === me.id ? ' (you)' : ''}${p.alive && p.expression ? ` <span class="expr">${emojiFor(p.expression)}</span>` : ''}</span>
+          <span class="muted">${p.alive ? (p.voted ? 'voted' : '') : 'out'}</span>
         </div>
       </div>
       ${p.alive ? `
         <div class="vc-bpm"><span class="heart" style="${heartStyle(v.bpm)}">&#9829;</span>${v.bpm ?? '--'}<span class="unit">BPM</span></div>
         <div class="vc-delta ${v.spike ? 'bad' : ''}">${esc(deltaText)}</div>
+        ${accusedDeltaText !== null ? `<div class="vc-delta-accused">${esc(accusedDeltaText)}</div>` : ''}
         ${sparkline(p.id, v.spike ? '#ff4d6d' : p.color)}
         <div class="vc-actions">
           ${canAct && p.id !== me.id ? `<button class="btn small ghost" data-accuse="${p.id}">Accuse</button>` : ''}
@@ -549,22 +588,38 @@ function vitalsCard(p, s) {
     </div>`;
 }
 
+const MEETING_KIND_META = {
+  button: { icon: '&#128680;', label: 'Emergency Meeting' },
+  body: { icon: '&#128128;', label: 'Body Reported' },
+  timeout: { icon: '&#9200;', label: 'Shift Ended' },
+};
+
 function meetingView() {
   const s = ui.state;
   const me = s.me;
   const voting = s.phase === 'voting';
   const fakeActive = me.fakeUntil > now();
+  const kindMeta = MEETING_KIND_META[s.meetingKind] || { icon: '&#128226;', label: 'Meeting' };
+  const readyCount = s.players.filter((p) => p.alive && p.readyToVote).length;
+  const aliveCount = s.players.filter((p) => p.alive).length;
   return `
     <div class="meeting">
       <header class="phase-head">
         <h2>${voting ? 'Vote now' : 'Emergency meeting'}</h2>
-        <div class="muted">${esc(s.meetingCaller)} &middot; spike = ${s.config.spikeBpm}+ BPM above resting</div>
+        <div class="meeting-banner">
+          <span class="meeting-icon">${kindMeta.icon}</span>
+          <span class="meeting-label">${esc(kindMeta.label)}</span>
+          <span class="muted">${esc(s.meetingCaller)} &middot; spike = ${s.config.spikeBpm}+ BPM above resting</span>
+        </div>
         ${timerChip()}
       </header>
       <div class="vitals-grid">${s.players.map((p) => vitalsCard(p, s)).join('')}</div>
       <div class="footer-row">
         ${voting && me.alive && me.vote === null ? '<button class="btn" data-vote="skip">Skip vote</button>' : ''}
         ${voting && me.vote !== null ? '<span class="muted">Vote cast. Waiting for others...</span>' : ''}
+        ${!voting && me.alive ? (me.readyToVote
+          ? `<span class="muted">Ready. Waiting for others... (${readyCount}/${aliveCount})</span>`
+          : `<button class="btn" data-action="ready_vote">Ready to vote</button>`) : ''}
         ${me.role === 'impostor' && me.alive ? `<button class="btn impostor-btn" data-action="fake_vitals" ${me.fakeAvailable ? '' : 'disabled'}>${fakeActive ? 'Fake vitals ACTIVE' : me.fakeAvailable ? 'Fake calm vitals (1x)' : 'Fake vitals used'}</button>` : ''}
         ${hostSkip(voting ? 'End voting' : 'Start voting')}
       </div>
@@ -623,6 +678,24 @@ main.addEventListener('click', (e) => {
   else if (vote) ui.net.send('vote', { targetId: vote });
 });
 
+// ---- camera selection --------------------------------------------------------
+
+async function populateCameraList() {
+  let cams;
+  try {
+    cams = await listCameras();
+  } catch {
+    return;
+  }
+  const select = $('#cam-select');
+  const saved = localStorage.getItem('vv-camera') || '';
+  select.innerHTML = cams
+    .map((d, i) => `<option value="${esc(d.deviceId)}">${esc(d.label || `Camera ${i + 1}`)}</option>`)
+    .join('');
+  $('#cam-select-wrap').classList.toggle('hidden', cams.length < 2);
+  if (saved && cams.some((d) => d.deviceId === saved)) select.value = saved;
+}
+
 // ---- boot -------------------------------------------------------------------
 
 async function boot() {
@@ -633,7 +706,17 @@ async function boot() {
   }
   ui.vitals = createVitals({ apiKey: ui.config.apiKey, sim: ui.config.sim, onChange: renderVitalsPanel });
   $('#recalibrate').onclick = () => ui.vitals.recalibrate();
-  ui.vitals.start($('#cam'));
+
+  const savedCamera = localStorage.getItem('vv-camera') || undefined;
+  await ui.vitals.start($('#cam'), savedCamera);
+  await populateCameraList();
+  navigator.mediaDevices.addEventListener('devicechange', populateCameraList);
+  $('#cam-select').onchange = (e) => {
+    const deviceId = e.target.value;
+    if (!deviceId) return;
+    localStorage.setItem('vv-camera', deviceId);
+    ui.vitals.setDevice(deviceId);
+  };
 
   setInterval(sendVitals, 1000);
   setInterval(sendExpression, 2000);
