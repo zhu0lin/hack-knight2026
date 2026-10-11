@@ -434,7 +434,7 @@ function rolesView() {
         <div class="role-sub">You are</div>
         <div class="role-name">${impostor ? 'THE IMPOSTOR' : 'CREW'}</div>
         <p>${impostor
-          ? 'Eliminate the crew without getting caught. In meetings you can fake calm vitals once. Keep your heart steady.'
+          ? 'Eliminate the crew without getting caught. Press V at a vent to travel unseen. In meetings you can fake calm vitals once. Keep your heart steady.'
           : 'Finish your tasks and find the impostor. Watch for pulse spikes when someone is accused.'}</p>
       </div>
     </div>`;
@@ -483,7 +483,9 @@ function hudView() {
       ${!me.alive ? '<div class="ghost-note">You are a ghost. Drift around and watch.</div>' : ''}
     </div>
     ${room ? `<div class="hud-room">${esc(room)}</div>` : ''}
-    <div class="hud-keys">WASD move &middot; E use &middot; R report${impostor ? ' &middot; Q eliminate' : ''}</div>
+    <div class="hud-keys">${me.ventId
+      ? 'A/D switch vent &middot; V climb out'
+      : `WASD move &middot; E use &middot; R report${impostor ? ' &middot; Q eliminate &middot; V vent' : ''}`}</div>
     ${taskModal()}`;
 }
 

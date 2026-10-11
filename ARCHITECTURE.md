@@ -97,14 +97,15 @@ With no `PRESAGE_API_KEY`, or with `VV_SIM=1`, `vitals.js` uses a simulated sour
 - The server (`Game` class) owns phases, roles, tasks, votes, kills, bodies and timers. Clients send intents (`vote`, `kill`, `report`, ...) and the server validates them: phase, alive, role, range, cooldown.
 - **Vitals are trusted from the client.** Each laptop computes its own pulse and sends `hr_update` about once a second. There is no anti-cheat; it's a party game.
 - **Movement is client-authoritative with server validation.** The client moves the local player immediately, with collision from `shared/map.js`, and sends `move` messages at about 15 Hz. The server rejects moves that jump more than 120 units or end inside a wall (`MAX_MOVE_PER_MESSAGE`). Rejected moves aren't corrected on the client; a mismatch only lasts until the next respawn. This is deliberate, to avoid building reconciliation for a demo.
-- **Range checks** (task stations, kill, report, emergency button) run on the server against server-side positions, with `RANGE_SLACK = 15` to absorb latency.
+- **Venting is the one server-authoritative teleport.** The client sends `vent` intents and the server moves the impostor to the vent; while `ventId` is set, `move`, tasks, kills, reports and the button are rejected. The client snaps its local position to `state.me.ventId`'s vent instead of predicting.
+- **Range checks** (task stations, kill, report, emergency button, vent entry) run on the server against server-side positions, with `RANGE_SLACK = 15` to absorb latency.
 - **Roles are private.** `viewFor(playerId)` builds a per-player state view. Other players' roles are hidden until they're ejected or the game ends. Private events (`kill` to the victim, `fake_vitals` to the impostor) go only to their target.
 
 ### Network protocol
 
 WebSocket with JSON messages. Every message has a `type`.
 
-Client to server: `join {name, clientId}`, `hr_update {vitals}`, `move {x, y}`, `start_game`, `add_bot`, `remove_bot`, `complete_task {taskId}`, `kill {targetId}`, `call_meeting`, `report {bodyId}`, `accuse {targetId}`, `fake_vitals`, `vote {targetId | 'skip'}`, `skip_phase`, `play_again`, `abandon_game`.
+Client to server: `join {name, clientId}`, `hr_update {vitals}`, `move {x, y}`, `start_game`, `add_bot`, `remove_bot`, `complete_task {taskId}`, `kill {targetId}`, `vent {action: 'enter' | 'next' | 'prev' | 'exit'}`, `call_meeting`, `report {bodyId}`, `accuse {targetId}`, `fake_vitals`, `vote {targetId | 'skip'}`, `skip_phase`, `play_again`, `abandon_game`.
 
 Server to client: `welcome {playerId}`, `state {state}` (full per-player view), `positions {positions: [[id, x, y], ...]}`, `event {event}` (toasts and sounds), `error {message}`, `reset`.
 
@@ -136,6 +137,7 @@ Game state lives in memory in a single process. **Cloud Run must run exactly one
 - **Task stations** are defined in `TASKS`, with a room, a position, and `kind: 'hold' | 'calm'`. Hold tasks take 2.5 s. Calm tasks ("Calm the reactor") need the player's pulse within 6 BPM of baseline for 6 s of accumulated time. Tasks are assigned randomly per player (`tasksPerPlayer`, default 3).
 - **Spawn:** players spawn in a circle around the emergency button in the Mess Hall at game start and after every meeting.
 - **Vision:** crew see 380 units and the impostor 520. Fog is purely client-side rendering, and the server still sends all positions. Ghosts see everything and move through walls.
+- **Vents:** `VENTS` in `map.js` groups six vents into two networks; list order is the cycle order for `ventNeighbor`. Only a living impostor within `VENT_RANGE` can enter, and they can only travel within the entered network. A vented player is the one exception to "the server sends all positions": `hiddenFrom` drops them from other players' `state.players` and `positions` (so positions are built per recipient), and the client drops remote players that vanish from `state.players` so they don't reappear sliding from stale coordinates. Meetings and game over force everyone out.
 - **Rendering:** `map-view.js` draws everything on a single `<canvas>` with `requestAnimationFrame`. The camera follows the player, with about 900 world units visible vertically. Other players are interpolated toward their latest server positions.
 - **The canvas is mounted once per tasks phase.** `app.js` re-renders other screens with `innerHTML`, but during the tasks phase it only updates the `#hud` overlay. Rewriting `#main` would destroy the canvas and the movement state.
 

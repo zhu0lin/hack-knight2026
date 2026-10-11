@@ -103,7 +103,7 @@ class Game {
   resetPlayer(p) {
     Object.assign(p, {
       role: null, alive: true, tasks: [], vote: null, killReadyAt: 0,
-      fakeUntil: 0, fakeBpm: null, fakeUsedInMeeting: -1, spiking: false,
+      fakeUntil: 0, fakeBpm: null, fakeUsedInMeeting: -1, spiking: false, ventId: null,
     });
     if (p.isBot) p.nav = { path: [], workingOn: null, workUntil: 0 };
   }
@@ -162,12 +162,34 @@ class Game {
 
   move(id, x, y) {
     const p = this.players.get(id);
-    if (!p || p.isBot || this.phase !== 'tasks') return;
+    if (!p || p.isBot || p.ventId || this.phase !== 'tasks') return;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (Math.hypot(x - p.x, y - p.y) > MAX_MOVE_PER_MESSAGE) return;
     if (p.alive ? !MAP.isWalkable(x, y, MAP.PLAYER_RADIUS - 2) : (x < 0 || y < 0 || x > MAP.WORLD.width || y > MAP.WORLD.height)) return;
     p.x = x;
     p.y = y;
+  }
+
+  vent(id, action) {
+    const p = this.players.get(id);
+    if (!p || p.role !== 'impostor' || !p.alive || this.phase !== 'tasks') return;
+    let target = null;
+    if (action === 'enter') {
+      if (!p.ventId) target = MAP.nearestVent(p, MAP.VENT_RANGE + RANGE_SLACK);
+    } else if (p.ventId && (action === 'next' || action === 'prev')) {
+      target = MAP.ventNeighbor(p.ventId, action === 'next' ? 1 : -1);
+    } else if (p.ventId && action === 'exit') {
+      p.ventId = null;
+      return;
+    }
+    if (!target) return;
+    p.ventId = target.id;
+    p.x = target.x;
+    p.y = target.y;
+  }
+
+  hiddenFrom(p, viewerId) {
+    return this.phase === 'tasks' && !!p.ventId && p.id !== viewerId;
   }
 
   // ---- derived ------------------------------------------------------------
@@ -235,7 +257,7 @@ class Game {
 
   completeTask(id, taskId) {
     const p = this.players.get(id);
-    if (!p || this.phase !== 'tasks' || !p.alive) return;
+    if (!p || this.phase !== 'tasks' || !p.alive || p.ventId) return;
     const task = p.tasks.find((t) => t.id === taskId);
     if (!task || task.done) return;
     if (MAP.distance(p, task) > MAP.USE_RANGE + RANGE_SLACK) return;
@@ -247,7 +269,7 @@ class Game {
     const killer = this.players.get(id);
     const target = this.players.get(targetId);
     if (this.phase !== 'tasks' || !killer || !target) return;
-    if (killer.role !== 'impostor' || !killer.alive || !target.alive || target.role === 'impostor') return;
+    if (killer.role !== 'impostor' || !killer.alive || killer.ventId || !target.alive || target.role === 'impostor') return;
     if (this.clock() < killer.killReadyAt) return;
     if (MAP.distance(killer, target) > MAP.KILL_RANGE + RANGE_SLACK) return;
     target.alive = false;
@@ -259,7 +281,7 @@ class Game {
 
   callMeeting(id) {
     const p = this.players.get(id);
-    if (this.phase !== 'tasks' || !p || !p.alive) return;
+    if (this.phase !== 'tasks' || !p || !p.alive || p.ventId) return;
     if (MAP.distance(p, MAP.EMERGENCY_BUTTON) > MAP.BUTTON_RANGE + RANGE_SLACK) return;
     this.startMeeting(`${p.name} pressed the emergency button`);
   }
@@ -267,7 +289,7 @@ class Game {
   report(id, bodyId) {
     const p = this.players.get(id);
     const body = this.bodies.find((b) => b.id === bodyId);
-    if (this.phase !== 'tasks' || !p || !p.alive || !body) return;
+    if (this.phase !== 'tasks' || !p || !p.alive || p.ventId || !body) return;
     if (MAP.distance(p, body) > MAP.REPORT_RANGE + RANGE_SLACK) return;
     const victim = this.players.get(body.playerId);
     this.startMeeting(`${p.name} found ${victim ? victim.name : 'someone'}'s body`);
@@ -281,6 +303,7 @@ class Game {
     for (const p of this.players.values()) {
       p.vote = null;
       p.spiking = false;
+      p.ventId = null;
     }
     this.setPhase('discussion', this.config.discussionMs);
     this.emit({ type: 'meeting', text: reason });
@@ -390,6 +413,7 @@ class Game {
 
   finish(winner, reason) {
     this.winner = { team: winner, reason };
+    for (const p of this.players.values()) p.ventId = null;
     this.setPhase('gameover', null);
     this.emit({ type: 'gameover', text: reason });
     return true;
@@ -526,8 +550,10 @@ class Game {
 
   // ---- views --------------------------------------------------------------
 
-  positions() {
-    return [...this.players.values()].map((p) => [p.id, Math.round(p.x), Math.round(p.y)]);
+  positions(viewerId) {
+    return [...this.players.values()]
+      .filter((p) => !this.hiddenFrom(p, viewerId))
+      .map((p) => [p.id, Math.round(p.x), Math.round(p.y)]);
   }
 
   publicPlayer(p, now) {
@@ -563,7 +589,7 @@ class Game {
       winner: this.winner,
       taskProgress: this.taskProgress(),
       config: { minPlayers: this.config.minPlayers, spikeBpm: this.config.spikeBpm },
-      players: [...this.players.values()].map((p) => this.publicPlayer(p, now)),
+      players: [...this.players.values()].filter((p) => !this.hiddenFrom(p, playerId)).map((p) => this.publicPlayer(p, now)),
       bodies: this.bodies,
       log: this.log,
       me: null,
@@ -578,6 +604,7 @@ class Game {
         killReadyAt: me.role === 'impostor' ? me.killReadyAt : null,
         fakeAvailable: me.role === 'impostor' && me.fakeUsedInMeeting !== this.meetingNumber,
         fakeUntil: me.role === 'impostor' ? me.fakeUntil : 0,
+        ventId: me.ventId,
       };
     }
     return view;
@@ -604,8 +631,7 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
     for (const [ws, playerId] of sockets) send(ws, { type: 'state', state: game.viewFor(playerId, now) });
   };
   const broadcastPositions = () => {
-    const msg = JSON.stringify({ type: 'positions', positions: game.positions() });
-    for (const ws of sockets.keys()) if (ws.readyState === ws.OPEN) ws.send(msg);
+    for (const [ws, playerId] of sockets) send(ws, { type: 'positions', positions: game.positions(playerId) });
   };
 
   game.onEvent((event) => {
@@ -657,6 +683,7 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
           case 'remove_bot': if (playerId === game.hostId) game.removeBot(); break;
           case 'complete_task': game.completeTask(playerId, msg.taskId); break;
           case 'kill': game.kill(playerId, msg.targetId); break;
+          case 'vent': game.vent(playerId, msg.action); break;
           case 'call_meeting': game.callMeeting(playerId); break;
           case 'report': game.report(playerId, msg.bodyId); break;
           case 'accuse': game.accuse(playerId, msg.targetId); break;

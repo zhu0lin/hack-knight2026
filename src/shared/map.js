@@ -8,6 +8,7 @@ const USE_RANGE = 80;
 const KILL_RANGE = 100;
 const REPORT_RANGE = 120;
 const BUTTON_RANGE = 90;
+const VENT_RANGE = 70;
 const VISION = { crew: 380, impostor: 520 };
 
 const ROOMS = [
@@ -48,6 +49,16 @@ const TASKS = [
   { id: 'scan', label: 'Run a medbay scan', kind: 'hold', room: 'medbay', x: 500, y: 300 },
   { id: 'fuel', label: 'Refuel the engines', kind: 'hold', room: 'storage', x: 1000, y: 1320 },
   { id: 'course', label: 'Chart the course', kind: 'hold', room: 'nav', x: 2280, y: 800 },
+];
+
+// Vents in the same network connect to each other; list order is the cycle order.
+const VENTS = [
+  { id: 'medbay-vent', network: 'west', room: 'medbay', x: 680, y: 440 },
+  { id: 'reactor-vent', network: 'west', room: 'reactor', x: 270, y: 930 },
+  { id: 'comms-vent', network: 'west', room: 'comms', x: 1880, y: 1240 },
+  { id: 'lab-vent', network: 'east', room: 'lab', x: 1720, y: 440 },
+  { id: 'nav-vent', network: 'east', room: 'nav', x: 2130, y: 930 },
+  { id: 'elec-vent', network: 'east', room: 'elec', x: 700, y: 1240 },
 ];
 
 const EMERGENCY_BUTTON = { x: 1200, y: 375 };
@@ -145,8 +156,26 @@ function route(from, to) {
   return points;
 }
 
+function nearestVent(pos, range = VENT_RANGE) {
+  let best = null;
+  for (const v of VENTS) {
+    const d = distance(pos, v);
+    if (d <= range && (!best || d < distance(pos, best))) best = v;
+  }
+  return best;
+}
+
+/** The vent `step` places away from `ventId` within its network (1 = next, -1 = previous). */
+function ventNeighbor(ventId, step) {
+  const vent = VENTS.find((v) => v.id === ventId);
+  if (!vent) return null;
+  const network = VENTS.filter((v) => v.network === vent.network);
+  const i = network.indexOf(vent);
+  return network[(i + step + network.length) % network.length];
+}
+
 module.exports = {
-  WORLD, PLAYER_RADIUS, SPEED, USE_RANGE, KILL_RANGE, REPORT_RANGE, BUTTON_RANGE, VISION,
-  ROOMS, CORRIDORS, WALKABLE, TASKS, EMERGENCY_BUTTON, SPAWN, NODES, EDGES,
-  distance, isWalkable, roomAt, spawnPoint, nearestNode, route,
+  WORLD, PLAYER_RADIUS, SPEED, USE_RANGE, KILL_RANGE, REPORT_RANGE, BUTTON_RANGE, VENT_RANGE, VISION,
+  ROOMS, CORRIDORS, WALKABLE, TASKS, VENTS, EMERGENCY_BUTTON, SPAWN, NODES, EDGES,
+  distance, isWalkable, roomAt, spawnPoint, nearestNode, route, nearestVent, ventNeighbor,
 };
