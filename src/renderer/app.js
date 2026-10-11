@@ -5,6 +5,7 @@ import * as sound from './sound.js';
 import { createMapView } from './map-view.js';
 import { isMinigame, mountMinigame } from './minigames.js';
 import { roomAt, TASKS } from '../shared/map.js';
+import { emojiFor } from '../shared/expressions.js';
 
 const HOLD_TASK_MS = 2500;
 const CALM_TASK_MS = 6000;
@@ -82,6 +83,8 @@ function renderVitalsPanel(v) {
   $('#my-bpm').textContent = v.bpm ?? '--';
   $('#my-conf').textContent = v.bpm ? `${Math.round(v.confidence)}%` : '--';
   $('#my-baseline').textContent = v.baseline ? `${v.baseline} BPM` : '--';
+  $('#my-expression').textContent = v.expression ? `${emojiFor(v.expression)} ${v.expression}` : '--';
+  if (v.expression !== ui.sentExpression) sendExpression();
   $('#my-heart').style.cssText = heartStyle(v.bpm);
   $('#calib-bar').style.width = `${Math.round(v.calibrationProgress * 100)}%`;
   $('#calib-label').textContent = v.locked
@@ -113,6 +116,12 @@ function sendVitals() {
       hint: v.validationOk ? null : v.hint,
     },
   });
+}
+
+function sendExpression() {
+  if (!ui.net || !ui.myVitals) return;
+  ui.sentExpression = ui.myVitals.expression;
+  ui.net.send('expression', { name: ui.myVitals.expression });
 }
 
 // ---- toasts -----------------------------------------------------------------
@@ -310,6 +319,7 @@ function renderMap() {
       send: (type, payload) => ui.net.send(type, payload),
       now,
       isBusy: () => !!ui.activeTask,
+      myVitals: () => ui.myVitals,
       useTask: startTask,
       cancelTask,
     });
@@ -524,7 +534,7 @@ function vitalsCard(p, s) {
       <div class="vc-head">
         ${avatar(p.color, { dead: !p.alive, size: 48 })}
         <div>
-          <div class="pname">${esc(p.name)}${p.id === me.id ? ' (you)' : ''}</div>
+          <div class="pname">${esc(p.name)}${p.id === me.id ? ' (you)' : ''}${p.alive && p.expression ? ` <span class="expr">${emojiFor(p.expression)}</span>` : ''}</div>
           <div class="muted">${p.alive ? (p.voted ? 'voted' : '') : 'out'}</div>
         </div>
       </div>
@@ -626,6 +636,7 @@ async function boot() {
   ui.vitals.start($('#cam'));
 
   setInterval(sendVitals, 1000);
+  setInterval(sendExpression, 2000);
   setInterval(() => {
     if (ui.map) renderMap();
   }, 150);

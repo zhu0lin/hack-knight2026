@@ -1,5 +1,6 @@
 import { SmartSpectraSDK, MetricType, ValidationCode } from '@smartspectra/node-sdk/renderer';
 import { decodeMetrics } from '@smartspectra/node-sdk/messages';
+import { ExpressionTracker, topExpression } from '../shared/expressions.js';
 
 const MIN_CONFIDENCE = 40;
 const CALIBRATION_MS = 20_000;
@@ -53,9 +54,22 @@ class VitalsTracker {
       locked: false,
       calibrationProgress: 0,
       error: null,
+      expression: null,
     };
     this.samples = [];
     this.calibrationStartedAt = null;
+    this.expressions = new ExpressionTracker();
+    setInterval(() => this.refreshExpression(), 1000);
+  }
+
+  pushExpression(name) {
+    this.expressions.push(name, Date.now());
+    this.refreshExpression();
+  }
+
+  refreshExpression() {
+    const expression = this.expressions.current(Date.now());
+    if (expression !== this.state.expression) this.update({ expression });
   }
 
   update(patch) {
@@ -93,7 +107,7 @@ class PresageSource {
     this.tracker = tracker;
     this.sdk = new SmartSpectraSDK({
       apiKey,
-      requestedMetrics: [MetricType.PULSE_RATE],
+      requestedMetrics: [MetricType.PULSE_RATE, MetricType.EXPRESSIONS],
     });
   }
 
@@ -118,6 +132,8 @@ class PresageSource {
       if (pulse && pulse.value > 0) {
         tracker.pushPulse(Math.round(pulse.value), pulse.confidence, pulse.stable);
       }
+      const expression = metrics.face?.expression?.at(-1);
+      if (expression) tracker.pushExpression(topExpression(expression.scores));
     });
     sdk.on('error', (code, message) => {
       tracker.update({ status: 'error', error: `SmartSpectra error ${code}: ${message}` });
@@ -142,6 +158,7 @@ class SimulatedSource {
     this.bpm = this.resting;
     this.stress = 0;
     this.stressHeld = false;
+    this.faceHeld = null;
   }
 
   async start(videoEl) {
@@ -151,14 +168,20 @@ class SimulatedSource {
       .catch(() => {});
 
     window.addEventListener('keydown', (e) => {
-      if (e.key.toLowerCase() === 'h' && !isTyping(e)) this.stressHeld = true;
+      if (isTyping(e)) return;
+      const k = e.key.toLowerCase();
+      if (k === 'h') this.stressHeld = true;
+      if (SIM_FACE_KEYS[k]) this.faceHeld = SIM_FACE_KEYS[k];
     });
     window.addEventListener('keyup', (e) => {
-      if (e.key.toLowerCase() === 'h') this.stressHeld = false;
+      const k = e.key.toLowerCase();
+      if (k === 'h') this.stressHeld = false;
+      if (SIM_FACE_KEYS[k] === this.faceHeld) this.faceHeld = null;
     });
 
     this.tracker.update({ status: 'running', validationOk: true, hint: null });
     setInterval(() => this.tick(), 1000);
+    setInterval(() => this.tracker.pushExpression(this.faceHeld || (this.stressHeld ? 'fear' : 'neutral')), 100);
   }
 
   tick() {
@@ -168,6 +191,8 @@ class SimulatedSource {
     this.tracker.pushPulse(Math.round(this.bpm), 90, true);
   }
 }
+
+const SIM_FACE_KEYS = { 1: 'happy', 2: 'surprise', 3: 'angry', 4: 'sad' };
 
 function isTyping(e) {
   const tag = e.target && e.target.tagName;

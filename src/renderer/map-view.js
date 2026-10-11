@@ -2,6 +2,7 @@ import {
   WORLD, ROOMS, WALKABLE, TASKS, VENTS, EMERGENCY_BUTTON, SPEED,
   USE_RANGE, KILL_RANGE, REPORT_RANGE, BUTTON_RANGE, VISION, isWalkable, distance, nearestVent, roomAt,
 } from '../shared/map.js';
+import { emojiFor } from '../shared/expressions.js';
 
 const SEND_INTERVAL_MS = 66;
 const VIEW_HEIGHT = 900;
@@ -95,11 +96,12 @@ export function createMapView(canvas, hooks) {
 
   function setPositions(list) {
     if (!state) return;
-    for (const [id, x, y] of list) {
+    for (const [id, x, y, expression] of list) {
       if (id === state.me.id) continue;
       if (!state.players.some((p) => p.id === id)) continue;
-      const o = others.get(id);
-      if (o) { o.tx = x; o.ty = y; } else others.set(id, { x, y, tx: x, ty: y });
+      let o = others.get(id);
+      if (o) { o.tx = x; o.ty = y; } else others.set(id, (o = { x, y, tx: x, ty: y }));
+      o.expression = expression;
     }
   }
 
@@ -367,19 +369,77 @@ export function createMapView(canvas, hooks) {
       if (!o) continue;
       if (!p.alive && meAlive) continue;
       if (!visible(o)) continue;
-      drawn.push({ p, x: o.x, y: o.y });
+      drawn.push({
+        p, x: o.x, y: o.y,
+        expression: o.expression !== undefined ? o.expression : p.expression,
+        bpm: p.vitals.bpm,
+        spike: p.vitals.spike,
+      });
     }
     const self = myPlayer();
-    if (self && !myVent()) drawn.push({ p: self, x: me.x, y: me.y, isMe: true });
+    if (self && !myVent()) {
+      const mine = hooks.myVitals ? hooks.myVitals() : null;
+      drawn.push({
+        p: self, x: me.x, y: me.y, isMe: true,
+        expression: mine ? mine.expression : null,
+        bpm: mine ? mine.bpm : self.vitals.bpm,
+        spike: self.vitals.spike,
+      });
+    }
     drawn.sort((a, b) => a.y - b.y);
 
-    for (const { p, x, y, isMe } of drawn) {
+    for (const { p, x, y, isMe, expression, bpm, spike } of drawn) {
       drawBean(ctx, x, y, p.color, { alpha: p.alive ? 1 : 0.45 });
       ctx.font = `${isMe ? 700 : 600} 15px -apple-system, sans-serif`;
       ctx.textAlign = 'center';
       ctx.fillStyle = p.alive ? '#e8ecf8' : 'rgba(232,236,248,0.5)';
       ctx.fillText(p.name, x, y - 32);
+      if (p.alive) drawHeadBubble(x, y - 66, expression, bpm, spike);
     }
+  }
+
+  /** Bubble above a player's head with their expression emoji and current BPM. */
+  function drawHeadBubble(x, y, expression, bpm, spike) {
+    const emoji = emojiFor(expression);
+    const pulse = Number.isFinite(bpm) ? `\u2665 ${bpm}` : '';
+    if (!emoji && !pulse) return;
+    const emojiFont = '26px "Apple Color Emoji", "Segoe UI Emoji", sans-serif';
+    const pulseFont = '700 16px -apple-system, sans-serif';
+    ctx.font = pulseFont;
+    const pulseW = pulse ? ctx.measureText(pulse).width : 0;
+    const emojiW = emoji ? 30 : 0;
+    const gap = emoji && pulse ? 6 : 0;
+    const w = emojiW + gap + pulseW + 20;
+    const left = x - w / 2;
+
+    ctx.fillStyle = spike ? 'rgba(90,12,28,0.9)' : 'rgba(11,15,26,0.75)';
+    ctx.beginPath();
+    ctx.roundRect(left, y - 18, w, 36, 12);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x - 6, y + 18);
+    ctx.lineTo(x + 6, y + 18);
+    ctx.lineTo(x, y + 25);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    if (emoji) {
+      ctx.fillStyle = '#ffffff';
+      ctx.font = emojiFont;
+      ctx.fillText(emoji, left + 10, y + 1);
+    }
+    if (pulse) {
+      ctx.font = pulseFont;
+      const px = left + 10 + emojiW + gap;
+      ctx.fillStyle = '#ff4d6d';
+      ctx.fillText('\u2665', px, y + 1);
+      ctx.fillStyle = spike ? '#ff8fa3' : '#e8ecf8';
+      ctx.fillText(` ${bpm}`, px + ctx.measureText('\u2665').width, y + 1);
+    }
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
   }
 
   function drawFog(w, h, radiusPx) {

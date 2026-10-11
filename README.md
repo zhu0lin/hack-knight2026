@@ -11,6 +11,7 @@ On a normal Wi-Fi network, one laptop hosts and the others join it. On a campus 
 - **Spikes.** During meetings, a player whose pulse rises 10+ BPM above their resting rate gets a red glow and a sound cue.
 - **Accuse.** Accusing someone puts them in the spotlight, so everyone watches their pulse react.
 - **Fake vitals.** Once per meeting the impostor can broadcast a calm, resting pulse for 25 seconds. Is that steady number real?
+- **Emotion bubbles.** The camera also reads your facial expression (happy, surprised, scared, angry, sad, ...) and shows it as an emoji above your head on the map and next to your name in meetings, alongside your live heart rate (the number turns red when you spike). Keep a straight face.
 - **Calm the reactor.** One possible task only completes if you keep your pulse near resting for 6 seconds.
 
 Heart rate is computed on each laptop by the SDK. The SDK needs internet access only to validate the API key; game traffic stays on your local network.
@@ -31,7 +32,7 @@ Get a free API key from the [Presage Developer Portal](https://physiology.presag
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `PRESAGE_API_KEY` | yes | none | SmartSpectra key. Without it the app uses simulated vitals. |
-| `VV_SIM` | no | `0` | `1` forces simulated vitals (hold `H` to fake a spike). |
+| `VV_SIM` | no | `0` | `1` forces simulated vitals (hold `H` to fake a spike, `1`-`4` for happy, surprised, angry, sad). |
 | `VV_PORT` | no | `7777` | Port the host listens on. Must match on every laptop. |
 
 ## Running

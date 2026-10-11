@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const http = require('http');
 const { WebSocketServer } = require('ws');
 const MAP = require('../shared/map');
+const { isExpression } = require('../shared/expressions');
 
 const DEFAULT_CONFIG = {
   minPlayers: 3,
@@ -24,6 +25,7 @@ const TICK_MS = 66;
 const STATE_EVERY_TICKS = 15;
 const MAX_MOVE_PER_MESSAGE = 120;
 const RANGE_SLACK = 15;
+const EXPRESSION_STALE_MS = 4000;
 
 const COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c', '#ff6fb5', '#ecf0f1', '#8d6e63'];
 
@@ -91,6 +93,7 @@ class Game {
       isBot,
       connected: true,
       vitals: { bpm: null, confidence: 0, baseline: null, locked: false, hint: null, at: 0 },
+      expression: { name: null, at: 0 },
     };
     this.players.set(player.id, player);
     if (!this.hostId && !isBot) this.hostId = player.id;
@@ -158,6 +161,17 @@ class Game {
       hint: typeof v.hint === 'string' ? v.hint.slice(0, 80) : null,
       at: this.clock(),
     };
+  }
+
+  setExpression(id, name) {
+    const p = this.players.get(id);
+    if (!p || (name !== null && !isExpression(name))) return;
+    p.expression = { name, at: this.clock() };
+  }
+
+  displayedExpression(p, now = this.clock()) {
+    if (!p.alive || !p.expression.name || now - p.expression.at > EXPRESSION_STALE_MS) return null;
+    return p.expression.name;
   }
 
   move(id, x, y) {
@@ -466,6 +480,13 @@ class Game {
       s.stress = Math.min(28, Math.max(0, s.stress + rate));
       s.bpm += ((s.resting + s.stress - s.bpm) * 0.35 + (Math.random() - 0.5) * 2) * Math.min(1, dt);
       bot.vitals = { ...bot.vitals, bpm: Math.round(s.bpm), at: now };
+
+      if (!accused && !(s.faceUntil > now) && Math.random() < dt * 0.08) {
+        s.face = Math.random() < 0.6 ? 'happy' : 'surprise';
+        s.faceUntil = now + 1500;
+      }
+      const face = accused ? (bot.role === 'impostor' ? 'fear' : 'surprise') : s.faceUntil > now ? s.face : 'neutral';
+      bot.expression = { name: face, at: now };
     }
   }
 
@@ -553,7 +574,7 @@ class Game {
   positions(viewerId) {
     return [...this.players.values()]
       .filter((p) => !this.hiddenFrom(p, viewerId))
-      .map((p) => [p.id, Math.round(p.x), Math.round(p.y)]);
+      .map((p) => [p.id, Math.round(p.x), Math.round(p.y), this.displayedExpression(p)]);
   }
 
   publicPlayer(p, now) {
@@ -572,6 +593,7 @@ class Game {
       x: Math.round(p.x),
       y: Math.round(p.y),
       vitals: this.displayedVitals(p, now),
+      expression: this.displayedExpression(p, now),
     };
   }
 
@@ -677,6 +699,7 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
         }
         switch (msg.type) {
           case 'hr_update': game.updateVitals(playerId, msg.vitals || {}); return;
+          case 'expression': game.setExpression(playerId, msg.name ?? null); return;
           case 'move': game.move(playerId, Number(msg.x), Number(msg.y)); return;
           case 'start_game': game.start(playerId); break;
           case 'add_bot': if (playerId === game.hostId) game.addBot(); break;
