@@ -8,7 +8,7 @@ function closeMeaning(code) {
   return '';
 }
 
-export function connect(url, { onState, onPositions, onEvent, onError, onStatus, onReset, onLog = () => {} }) {
+export function connect(url, { onState, onPositions, onEvent, onError, onStatus, onReset, onFaceCam, onLog = () => {} }) {
   let ws = null;
   let closedByUser = false;
   let joinMsg = null;
@@ -90,6 +90,8 @@ export function connect(url, { onState, onPositions, onEvent, onError, onStatus,
         onState(msg.state);
       } else if (msg.type === 'positions') {
         if (onPositions) onPositions(msg.positions);
+      } else if (msg.type === 'facecam') {
+        if (onFaceCam) onFaceCam(msg.playerId, msg.jpeg);
       } else if (msg.type === 'event') {
         onEvent(msg.event);
       } else if (msg.type === 'error') {

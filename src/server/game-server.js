@@ -651,6 +651,14 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
         }
         switch (msg.type) {
           case 'hr_update': game.updateVitals(playerId, msg.vitals || {}); return;
+          case 'face_snapshot': {
+            if (typeof msg.jpeg !== 'string') return;
+            const payload = JSON.stringify({ type: 'facecam', playerId, jpeg: msg.jpeg });
+            for (const sock of sockets.keys()) {
+              if (sock !== ws && sock.readyState === sock.OPEN) sock.send(payload);
+            }
+            return;
+          }
           case 'move': game.move(playerId, Number(msg.x), Number(msg.y)); return;
           case 'start_game': game.start(playerId); break;
           case 'add_bot': if (playerId === game.hostId) game.addBot(); break;

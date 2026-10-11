@@ -27,6 +27,7 @@ const ui = {
   history: new Map(),
   lastPhase: null,
   map: null,
+  faceCams: new Map(), // playerId -> { url, img }
 };
 
 const clientId = sessionStorage.getItem('vv-client-id') || crypto.randomUUID();
@@ -44,14 +45,23 @@ function secondsLeft() {
   return Math.max(0, Math.ceil((s.phaseEndsAt - now()) / 1000));
 }
 
-function avatar(color, { dead = false, size = 64 } = {}) {
+function avatar(color, { dead = false, size = 64, id = '', faceUrl = null } = {}) {
+  const clipId = `face-clip-${id || Math.random().toString(36).slice(2)}`;
   return `
     <svg class="avatar ${dead ? 'dead' : ''}" width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true">
       <rect x="14" y="6" width="36" height="52" rx="18" fill="${color}" />
+      ${faceUrl ? `
+      <clipPath id="${clipId}"><circle cx="32" cy="10" r="15" /></clipPath>
+      <image href="${faceUrl}" x="17" y="-5" width="30" height="30" clip-path="url(#${clipId})" preserveAspectRatio="xMidYMid slice" />
+      <circle cx="32" cy="10" r="15" fill="none" stroke="${color}" stroke-width="2" />` : `
       <rect x="18" y="16" width="28" height="14" rx="7" fill="#0b0f1a" opacity="0.85" />
-      <polyline points="20,23 26,23 29,18 33,28 36,21 38,23 44,23" fill="none" stroke="#5ef0b4" stroke-width="2" stroke-linejoin="round" />
+      <polyline points="20,23 26,23 29,18 33,28 36,21 38,23 44,23" fill="none" stroke="#5ef0b4" stroke-width="2" stroke-linejoin="round" />`}
       ${dead ? '<line x1="16" y1="10" x2="48" y2="54" stroke="#0b0f1a" stroke-width="4" />' : ''}
     </svg>`;
+}
+
+function faceCamUrl(playerId) {
+  return ui.faceCams.get(playerId)?.url || null;
 }
 
 function sparkline(playerId, color) {
@@ -113,6 +123,34 @@ function sendVitals() {
   });
 }
 
+// ---- face cams ----------------------------------------------------------------
+
+const faceCamCanvas = document.createElement('canvas');
+faceCamCanvas.width = 64;
+faceCamCanvas.height = 64;
+const faceCamCtx = faceCamCanvas.getContext('2d');
+
+function setFaceCam(playerId, jpeg) {
+  if (!playerId || !jpeg) return;
+  let entry = ui.faceCams.get(playerId);
+  if (!entry) {
+    entry = { img: new Image() };
+    ui.faceCams.set(playerId, entry);
+  }
+  entry.url = jpeg;
+  entry.img.src = jpeg;
+}
+
+function sendFaceSnapshot() {
+  const video = $('#cam');
+  if (!video.videoWidth) return;
+  const size = Math.min(video.videoWidth, video.videoHeight);
+  faceCamCtx.drawImage(video, (video.videoWidth - size) / 2, (video.videoHeight - size) / 2, size, size, 0, 0, 64, 64);
+  const jpeg = faceCamCanvas.toDataURL('image/jpeg', 0.5);
+  if (ui.state && ui.state.me) setFaceCam(ui.state.me.id, jpeg);
+  if (ui.net) ui.net.send('face_snapshot', { jpeg });
+}
+
 // ---- toasts -----------------------------------------------------------------
 
 function toast(text, kind = 'info') {
@@ -163,6 +201,7 @@ function joinServer(url, name) {
     onPositions: (positions) => {
       if (ui.map) ui.map.setPositions(positions);
     },
+    onFaceCam: setFaceCam,
     onEvent: handleEvent,
     onError: (message) => toast(message, 'warn'),
   });
@@ -291,6 +330,7 @@ function renderMap() {
       isBusy: () => !!ui.activeTask,
       useTask: startTask,
       cancelTask,
+      getFaceImage: (playerId) => ui.faceCams.get(playerId)?.img || null,
     });
   }
   ui.map.setState(ui.state);
@@ -409,7 +449,7 @@ function lobbyView() {
       <div class="player-grid">
         ${s.players.map((p) => `
           <div class="player-card ${p.vitals.locked ? 'ready' : ''}">
-            ${avatar(p.color)}
+            ${avatar(p.color, { id: p.id, faceUrl: faceCamUrl(p.id) })}
             <div class="pname">${esc(p.name)}${p.isHost ? ' <span class="tag">host</span>' : ''}${p.isBot ? ' <span class="tag">bot</span>' : ''}</div>
             <div class="pstatus">${p.vitals.locked ? `Locked &middot; resting ${p.vitals.baseline} BPM` : esc(p.vitals.hint || 'Calibrating...')}</div>
           </div>`).join('')}
@@ -498,7 +538,7 @@ function vitalsCard(p, s) {
     <div class="vitals-card ${p.alive ? '' : 'dead'} ${v.spike ? 'spike' : ''} ${spot ? 'spotlight' : ''}">
       ${spot ? '<div class="spot-tag">ACCUSED</div>' : ''}
       <div class="vc-head">
-        ${avatar(p.color, { dead: !p.alive, size: 48 })}
+        ${avatar(p.color, { dead: !p.alive, size: 48, id: p.id, faceUrl: faceCamUrl(p.id) })}
         <div>
           <div class="pname">${esc(p.name)}${p.id === me.id ? ' (you)' : ''}</div>
           <div class="muted">${p.alive ? (p.voted ? 'voted' : '') : 'out'}</div>
@@ -546,7 +586,7 @@ function revealView() {
   return `
     <div class="center">
       <div class="panel reveal">
-        ${ejected ? `${avatar(ejected.color, { size: 120 })}
+        ${ejected ? `${avatar(ejected.color, { size: 120, id: ejected.id, faceUrl: faceCamUrl(ejected.id) })}
           <h2>${esc(ejected.name)} was ejected.</h2>
           <p class="reveal-role ${e.wasImpostor ? 'bad' : ''}">${e.wasImpostor ? 'They WERE the impostor.' : 'They were not the impostor.'}</p>`
           : `<h2>No one was ejected.</h2><p class="muted">${e && e.tie ? 'The vote was tied.' : 'The vote was skipped.'}</p>`}
@@ -568,7 +608,7 @@ function gameoverView() {
         <div class="roster">
           ${s.players.map((p) => `
             <div class="roster-row">
-              ${avatar(p.color, { size: 36 })}
+              ${avatar(p.color, { size: 36, id: p.id, faceUrl: faceCamUrl(p.id) })}
               <span class="pname">${esc(p.name)}</span>
               <span class="tag ${p.role === 'impostor' ? 'danger' : ''}">${p.role}</span>
             </div>`).join('')}
@@ -630,6 +670,7 @@ async function boot() {
   };
 
   setInterval(sendVitals, 1000);
+  setInterval(sendFaceSnapshot, 1500);
   setInterval(() => {
     if (ui.map) renderMap();
   }, 150);

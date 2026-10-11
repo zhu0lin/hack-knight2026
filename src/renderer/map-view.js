@@ -4,7 +4,7 @@ import {
 } from '../shared/map.js';
 
 const SEND_INTERVAL_MS = 66;
-const VIEW_HEIGHT = 900;
+const VIEW_HEIGHT = 720;
 
 const STARS = Array.from({ length: 220 }, () => ({
   x: Math.random() * WORLD.width,
@@ -19,7 +19,7 @@ const MOVE_KEYS = {
   d: [1, 0], arrowright: [1, 0],
 };
 
-function drawBean(ctx, x, y, color, { alpha = 1, lying = false } = {}) {
+function drawBean(ctx, x, y, color, { alpha = 1, lying = false, faceImg = null } = {}) {
   ctx.save();
   ctx.translate(x, y);
   if (lying) ctx.rotate(Math.PI / 2);
@@ -32,21 +32,35 @@ function drawBean(ctx, x, y, color, { alpha = 1, lying = false } = {}) {
   ctx.beginPath();
   ctx.roundRect(-15, -24, 30, 46, 15);
   ctx.fill();
-  ctx.fillStyle = '#0b0f1a';
-  ctx.beginPath();
-  ctx.roundRect(-11, -15, 22, 11, 5);
-  ctx.fill();
-  ctx.strokeStyle = '#5ef0b4';
-  ctx.lineWidth = 1.6;
-  ctx.beginPath();
-  ctx.moveTo(-9, -9.5);
-  ctx.lineTo(-4, -9.5);
-  ctx.lineTo(-2, -13);
-  ctx.lineTo(1, -6);
-  ctx.lineTo(3, -11);
-  ctx.lineTo(5, -9.5);
-  ctx.lineTo(9, -9.5);
-  ctx.stroke();
+  if (faceImg && faceImg.complete && faceImg.naturalWidth) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, -18, 14, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(faceImg, -14, -32, 28, 28);
+    ctx.restore();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, -18, 14, 0, Math.PI * 2);
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = '#0b0f1a';
+    ctx.beginPath();
+    ctx.roundRect(-11, -15, 22, 11, 5);
+    ctx.fill();
+    ctx.strokeStyle = '#5ef0b4';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(-9, -9.5);
+    ctx.lineTo(-4, -9.5);
+    ctx.lineTo(-2, -13);
+    ctx.lineTo(1, -6);
+    ctx.lineTo(3, -11);
+    ctx.lineTo(5, -9.5);
+    ctx.lineTo(9, -9.5);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -315,7 +329,7 @@ export function createMapView(canvas, hooks) {
     drawn.sort((a, b) => a.y - b.y);
 
     for (const { p, x, y, isMe } of drawn) {
-      drawBean(ctx, x, y, p.color, { alpha: p.alive ? 1 : 0.45 });
+      drawBean(ctx, x, y, p.color, { alpha: p.alive ? 1 : 0.45, faceImg: hooks.getFaceImage && hooks.getFaceImage(p.id) });
       ctx.font = `${isMe ? 700 : 600} 15px -apple-system, sans-serif`;
       ctx.textAlign = 'center';
       ctx.fillStyle = p.alive ? '#e8ecf8' : 'rgba(232,236,248,0.5)';
