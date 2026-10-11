@@ -252,7 +252,7 @@ test('tied vote ejects nobody', () => {
 test('bots walk the map, do tasks, and play a full game to completion', () => {
   let t = Date.now();
   const game = new Game(
-    { taskPhaseMs: 60_000, discussionMs: 2000, votingMs: 2000, revealMs: 1000, roleRevealMs: 1000, killCooldownMs: 5000, botTaskMs: 1000 },
+    { taskPhaseMs: 60_000, discussionMs: 2000, votingMs: 2000, revealMs: 1000, roleRevealMs: 1000, killCooldownMs: 5000, botTaskMinMs: 1000, botTaskMaxMs: 1000 },
     () => t,
   );
   const host = game.addPlayer({ clientId: 'h', name: 'Host' });

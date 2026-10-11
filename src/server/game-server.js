@@ -17,7 +17,8 @@ const DEFAULT_CONFIG = {
   fakeVitalsMs: 25_000,
   spikeBpm: 10,
   vitalsStaleMs: 15_000,
-  botTaskMs: 3_000,
+  botTaskMinMs: 5_000,
+  botTaskMaxMs: 11_000,
 };
 
 const TICK_MS = 66;
@@ -529,7 +530,8 @@ class Game {
       const atTask = bot.tasks.find((t) => !t.done && MAP.distance(bot, t) <= MAP.USE_RANGE);
       if (atTask) {
         nav.workingOn = atTask.id;
-        nav.workUntil = now + this.config.botTaskMs;
+        const { botTaskMinMs, botTaskMaxMs } = this.config;
+        nav.workUntil = now + botTaskMinMs + Math.random() * (botTaskMaxMs - botTaskMinMs);
         continue;
       }
       const next = bot.tasks.find((t) => !t.done);
