@@ -4,7 +4,7 @@ import { gameSocketUrl } from '../socket-url.js';
 import * as sound from './sound.js';
 import { createMapView } from './map-view.js';
 import { isMinigame, mountMinigame } from './minigames.js';
-import { roomAt } from '../shared/map.js';
+import { roomAt, TASKS } from '../shared/map.js';
 
 const HOLD_TASK_MS = 2500;
 const CALM_TASK_MS = 6000;
@@ -216,8 +216,10 @@ function handleEvent(event) {
 
 // ---- tasks ------------------------------------------------------------------
 
-function startTask(task) {
+function startTask(assigned) {
   if (ui.activeTask) return;
+  // The server's task copy may come from an older map; the client's map decides how a task is played.
+  const task = { ...assigned, ...(TASKS.find((t) => t.id === assigned.id) || {}) };
   if (isMinigame(task.kind)) {
     const layer = $('#task-layer');
     if (!layer) return;
