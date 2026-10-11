@@ -1,6 +1,6 @@
 import {
-  WORLD, ROOMS, WALKABLE, TASKS, EMERGENCY_BUTTON, SPEED,
-  USE_RANGE, KILL_RANGE, REPORT_RANGE, BUTTON_RANGE, VISION, isWalkable, distance,
+  WORLD, ROOMS, WALKABLE, TASKS, VENTS, EMERGENCY_BUTTON, SPEED,
+  USE_RANGE, KILL_RANGE, REPORT_RANGE, BUTTON_RANGE, VISION, isWalkable, distance, nearestVent, roomAt,
 } from '../shared/map.js';
 
 const SEND_INTERVAL_MS = 66;
@@ -11,6 +11,8 @@ const STARS = Array.from({ length: 220 }, () => ({
   y: Math.random() * WORLD.height,
   r: Math.random() * 1.6 + 0.3,
 }));
+
+const VENT_CYCLE_KEYS = { a: 'prev', arrowleft: 'prev', d: 'next', arrowright: 'next' };
 
 const MOVE_KEYS = {
   w: [0, -1], arrowup: [0, -1],
@@ -69,6 +71,7 @@ export function createMapView(canvas, hooks) {
   const myPlayer = () => state && state.players.find((p) => p.id === state.me.id);
   const amAlive = () => state && state.me.alive;
   const amImpostor = () => state && state.me.role === 'impostor';
+  const myVent = () => (state && state.me.ventId ? VENTS.find((v) => v.id === state.me.ventId) : null);
 
   function setState(next) {
     state = next;
@@ -76,6 +79,13 @@ export function createMapView(canvas, hooks) {
       const p = myPlayer();
       if (p) me = { x: p.x, y: p.y };
     }
+    const vent = myVent();
+    if (vent) {
+      me = { x: vent.x, y: vent.y };
+      keys.clear();
+    }
+    const listed = new Set(next.players.map((p) => p.id));
+    for (const id of others.keys()) if (!listed.has(id)) others.delete(id);
     for (const p of next.players) {
       if (p.id === next.me.id) continue;
       const o = others.get(p.id);
@@ -87,6 +97,7 @@ export function createMapView(canvas, hooks) {
     if (!state) return;
     for (const [id, x, y] of list) {
       if (id === state.me.id) continue;
+      if (!state.players.some((p) => p.id === id)) continue;
       const o = others.get(id);
       if (o) { o.tx = x; o.ty = y; } else others.set(id, { x, y, tx: x, ty: y });
     }
@@ -94,22 +105,29 @@ export function createMapView(canvas, hooks) {
 
   // ---- interaction targets ------------------------------------------------
 
+  const canAct = () => me && amAlive() && !myVent();
+
   function nearestTask() {
-    if (!me || !amAlive()) return null;
+    if (!canAct()) return null;
     return state.me.tasks.find((t) => !t.done && distance(me, t) <= USE_RANGE) || null;
   }
 
   function nearButton() {
-    return me && amAlive() && distance(me, EMERGENCY_BUTTON) <= BUTTON_RANGE;
+    return canAct() && distance(me, EMERGENCY_BUTTON) <= BUTTON_RANGE;
   }
 
   function nearestBody() {
-    if (!me || !amAlive()) return null;
+    if (!canAct()) return null;
     return (state.bodies || []).find((b) => distance(me, b) <= REPORT_RANGE) || null;
   }
 
+  function enterableVent() {
+    if (!canAct() || !amImpostor()) return null;
+    return nearestVent(me);
+  }
+
   function killTarget() {
-    if (!me || !amAlive() || !amImpostor()) return null;
+    if (!canAct() || !amImpostor()) return null;
     let best = null;
     for (const p of state.players) {
       if (p.id === state.me.id || !p.alive) continue;
@@ -128,12 +146,14 @@ export function createMapView(canvas, hooks) {
   function computePrompt() {
     if (!state || !me) return null;
     if (hooks.isBusy()) return null;
+    if (myVent()) return '[A/D] Switch vent     [V] Climb out';
     const parts = [];
     const task = nearestTask();
     if (task) parts.push(`[E] ${task.label}`);
     else if (nearButton()) parts.push('[E] Emergency meeting');
     const body = nearestBody();
     if (body) parts.push('[R] Report body');
+    if (enterableVent()) parts.push('[V] Vent');
     const target = killTarget();
     if (target) {
       const cd = killCooldown();
@@ -146,6 +166,13 @@ export function createMapView(canvas, hooks) {
 
   function onKeyDown(e) {
     const k = e.key.toLowerCase();
+    if (myVent()) {
+      if (VENT_CYCLE_KEYS[k] || MOVE_KEYS[k]) e.preventDefault();
+      if (e.repeat) return;
+      if (VENT_CYCLE_KEYS[k]) hooks.send('vent', { action: VENT_CYCLE_KEYS[k] });
+      else if (k === 'v') hooks.send('vent', { action: 'exit' });
+      return;
+    }
     if (MOVE_KEYS[k]) {
       keys.add(k);
       e.preventDefault();
@@ -162,6 +189,11 @@ export function createMapView(canvas, hooks) {
     } else if (k === 'q') {
       const target = killTarget();
       if (target && !killCooldown()) hooks.send('kill', { targetId: target.id });
+    } else if (k === 'v') {
+      if (!hooks.isBusy() && enterableVent()) {
+        keys.clear();
+        hooks.send('vent', { action: 'enter' });
+      }
     } else if (k === 'escape') {
       hooks.cancelTask();
     }
@@ -180,7 +212,11 @@ export function createMapView(canvas, hooks) {
   // ---- simulation ---------------------------------------------------------
 
   function step(dt) {
-    if (!me || !state || hooks.isBusy()) return;
+    for (const o of others.values()) {
+      o.x += (o.tx - o.x) * Math.min(1, dt * 12);
+      o.y += (o.ty - o.y) * Math.min(1, dt * 12);
+    }
+    if (!me || !state || hooks.isBusy() || myVent()) return;
     let dx = 0;
     let dy = 0;
     for (const k of keys) {
@@ -205,10 +241,6 @@ export function createMapView(canvas, hooks) {
       hooks.send('move', { x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10 });
       lastSend = nowMs;
       lastSent = { x: me.x, y: me.y };
-    }
-    for (const o of others.values()) {
-      o.x += (o.tx - o.x) * Math.min(1, dt * 12);
-      o.y += (o.ty - o.y) * Math.min(1, dt * 12);
     }
   }
 
@@ -285,6 +317,33 @@ export function createMapView(canvas, hooks) {
       ctx.fillStyle = '#0b0f1a';
       ctx.fillRect(t.x - 10, t.y - 6, 20, 9);
     }
+
+    const current = myVent();
+    for (const v of VENTS) {
+      ctx.fillStyle = '#1a1f33';
+      ctx.fillRect(v.x - 22, v.y - 14, 44, 28);
+      ctx.strokeStyle = current && current.id === v.id ? '#ff4d6d' : '#56608a';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(v.x - 22, v.y - 14, 44, 28);
+      ctx.lineWidth = 2;
+      for (let i = -14; i <= 14; i += 7) {
+        ctx.beginPath();
+        ctx.moveTo(v.x + i, v.y - 10);
+        ctx.lineTo(v.x + i, v.y + 10);
+        ctx.stroke();
+      }
+    }
+  }
+
+  function drawVentOverlay(w, h) {
+    const vent = myVent();
+    if (!vent) return;
+    ctx.fillStyle = 'rgba(40, 6, 14, 0.35)';
+    ctx.fillRect(0, 0, w, h);
+    ctx.font = '700 22px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff8fa3';
+    ctx.fillText(`In the vents: ${roomAt(vent.x, vent.y) || ''}`, w / 2, 120);
   }
 
   function drawActors(vision) {
@@ -311,7 +370,7 @@ export function createMapView(canvas, hooks) {
       drawn.push({ p, x: o.x, y: o.y });
     }
     const self = myPlayer();
-    if (self) drawn.push({ p: self, x: me.x, y: me.y, isMe: true });
+    if (self && !myVent()) drawn.push({ p: self, x: me.x, y: me.y, isMe: true });
     drawn.sort((a, b) => a.y - b.y);
 
     for (const { p, x, y, isMe } of drawn) {
@@ -388,6 +447,7 @@ export function createMapView(canvas, hooks) {
       drawActors(vision);
       ctx.restore();
       if (amAlive()) drawFog(w, h, vision * scale);
+      drawVentOverlay(w, h);
       drawTaskArrows(w, h, scale);
       prompt = computePrompt();
       drawPrompt(w, h);

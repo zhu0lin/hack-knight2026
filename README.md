@@ -86,7 +86,7 @@ $env:VV_SIM=1; $env:VV_PROFILE=2; npm start   # window 2: simulated, join "local
 
 1. **Lobby:** calibrate resting pulse.
 2. **Role reveal:** one player is secretly the impostor.
-3. **Shift (150s):** everyone spawns around the emergency button in the Mess Hall and explores the ship. Crew walk to their task stations (yellow, with arrows at the screen edge pointing to them). The impostor fakes tasks and eliminates crew up close (25s cooldown), leaving a body. Finding and reporting a body, pressing the emergency button, or the shift timer running out starts a meeting.
+3. **Shift (150s):** everyone spawns around the emergency button in the Mess Hall and explores the ship. Crew walk to their task stations (yellow, with arrows at the screen edge pointing to them). Some tasks are a simple hold, and three are mouse minigames: swipe your ID badge at a steady pace (too fast or too slow is rejected), reconnect the colored wires in the order the panel shows, and drag the ship through the course waypoints without leaving the route. The impostor fakes tasks and eliminates crew up close (25s cooldown), leaving a body. The impostor can also crawl through vents: two networks of three vents each connect distant rooms, and the impostor is invisible to everyone while inside. Finding and reporting a body, pressing the emergency button, or the shift timer running out starts a meeting.
 4. **Meeting (60s discussion, 30s voting):** live heart-rate cards for everyone, Accuse and Vote buttons. The host can skip timers.
 5. **Reveal:** the ejected player's role is shown.
 6. **Win:** crew wins by ejecting the impostor or finishing all tasks; the impostor wins when they equal the remaining crew.
@@ -99,6 +99,8 @@ $env:VV_SIM=1; $env:VV_PROFILE=2; npm start   # window 2: simulated, join "local
 | `E` | Use a task station, or the emergency button in the Mess Hall |
 | `R` | Report a body you're standing near |
 | `Q` | Eliminate a nearby crewmate (impostor only) |
+| `V` | Enter a nearby vent, or climb out (impostor only) |
+| `A` / `D` (in a vent) | Switch to the previous or next connected vent |
 | `Esc` | Cancel the task you're doing |
 
 You can only see players within your vision radius (the impostor sees further). Eliminated players become ghosts who can drift through walls and watch, but can't vote.
@@ -119,6 +121,7 @@ The ship has nine rooms: Mess Hall, Medbay, Lab, Hub, Reactor, Navigation, Elect
 src/main/        Electron main process + preload (SDK bridge, host game server)
 src/server/      WebSocket game server (state machine, positions, bots, vitals relay)
 src/shared/      map.js: rooms, corridors, collision, task stations, bot waypoints (used by server and client)
+                 minigame-rules.js: swipe timing, wire order and course waypoint rules
 src/renderer/    UI: vitals.js (SmartSpectra + simulator), app.js (screens), map-view.js (canvas map + WASD), net.js, sound.js
 src/socket-url.js  turns a typed IP or Cloud Run URL into a websocket address
 Dockerfile       game server only, for Cloud Run

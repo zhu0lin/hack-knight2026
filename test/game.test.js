@@ -7,6 +7,7 @@ const WebSocket = require('ws');
 const { Game, createGameServer } = require('../src/server/game-server');
 const MAP = require('../src/shared/map');
 const { gameSocketUrl } = require('../src/socket-url');
+const RULES = require('../src/shared/minigame-rules');
 
 function lockedVitals(bpm, baseline = 70) {
   return { bpm, confidence: 90, baseline, locked: true, hint: null };
@@ -126,6 +127,81 @@ test('kills need range and cooldown, leave a body that can be reported', () => {
   assert.match(game.meetingCaller, /body/);
 });
 
+test('vents sit on walkable ground in networks of at least two', () => {
+  for (const v of MAP.VENTS) {
+    assert.ok(MAP.isWalkable(v.x, v.y), `${v.id} is inside a wall`);
+    assert.ok(MAP.VENTS.filter((o) => o.network === v.network).length >= 2);
+  }
+});
+
+test('only a living impostor near a vent can enter it', () => {
+  const { game, impostor, crew } = startedGame();
+  const vent = MAP.VENTS[0];
+  place(crew[0], vent.x, vent.y);
+  game.vent(crew[0].id, 'enter');
+  assert.strictEqual(crew[0].ventId, null, 'crew entered a vent');
+
+  place(impostor, 1200, 375);
+  game.vent(impostor.id, 'enter');
+  assert.strictEqual(impostor.ventId, null, 'entered from out of range');
+
+  place(impostor, vent.x + 40, vent.y);
+  game.vent(impostor.id, 'enter');
+  assert.strictEqual(impostor.ventId, vent.id);
+  assert.strictEqual(impostor.x, vent.x);
+
+  game.vent(impostor.id, 'exit');
+  impostor.alive = false;
+  game.vent(impostor.id, 'enter');
+  assert.strictEqual(impostor.ventId, null, 'a ghost entered a vent');
+});
+
+test('venting cycles within one network, blocks actions, and hides the impostor', () => {
+  const { game, impostor, crew } = startedGame();
+  const [first, ...rest] = MAP.VENTS.filter((v) => v.network === MAP.VENTS[0].network);
+  place(impostor, first.x, first.y);
+  game.vent(impostor.id, 'enter');
+
+  game.vent(impostor.id, 'next');
+  assert.strictEqual(impostor.ventId, rest[0].id);
+  assert.deepStrictEqual([impostor.x, impostor.y], [rest[0].x, rest[0].y]);
+  game.vent(impostor.id, 'prev');
+  game.vent(impostor.id, 'prev');
+  assert.strictEqual(impostor.ventId, rest[rest.length - 1].id);
+
+  const before = { x: impostor.x, y: impostor.y };
+  game.move(impostor.id, impostor.x + 10, impostor.y);
+  assert.deepStrictEqual({ x: impostor.x, y: impostor.y }, before, 'walked while vented');
+
+  place(crew[0], impostor.x + 30, impostor.y);
+  impostor.killReadyAt = 0;
+  game.kill(impostor.id, crew[0].id);
+  assert.strictEqual(crew[0].alive, true, 'killed from inside a vent');
+
+  const crewView = game.viewFor(crew[0].id);
+  assert.ok(!crewView.players.some((p) => p.id === impostor.id));
+  assert.ok(!game.positions(crew[0].id).some(([id]) => id === impostor.id));
+  assert.strictEqual(crewView.me.ventId, null);
+  const ownView = game.viewFor(impostor.id);
+  assert.strictEqual(ownView.me.ventId, impostor.ventId);
+  assert.ok(ownView.players.some((p) => p.id === impostor.id));
+
+  game.vent(impostor.id, 'exit');
+  assert.strictEqual(impostor.ventId, null);
+  assert.deepStrictEqual({ x: impostor.x, y: impostor.y }, before);
+  assert.ok(game.viewFor(crew[0].id).players.some((p) => p.id === impostor.id));
+});
+
+test('a meeting pulls the impostor out of the vents', () => {
+  const { game, impostor, crew } = startedGame();
+  place(impostor, MAP.VENTS[0].x, MAP.VENTS[0].y);
+  game.vent(impostor.id, 'enter');
+  pressButton(game, crew[0]);
+  assert.strictEqual(game.phase, 'discussion');
+  assert.strictEqual(impostor.ventId, null);
+  assert.strictEqual(game.viewFor(crew[0].id).players.length, 3);
+});
+
 test('flags a spike relative to baseline and fake vitals mask it', () => {
   const { game, impostor, crew } = startedGame();
   pressButton(game, crew[0]);
@@ -243,6 +319,15 @@ test('LAN server relays heart rate and positions between connected clients', asy
   const annPos = ben.positions.find(([id]) => id === ann.id);
   assert.strictEqual(annPos[1], Math.round(me.x));
 
+  for (const p of server.game.players.values()) p.role = 'crew';
+  me.role = 'impostor';
+  place(me, MAP.VENTS[0].x, MAP.VENTS[0].y);
+  ann.ws.send(JSON.stringify({ type: 'vent', action: 'enter' }));
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(ann.state.me.ventId, MAP.VENTS[0].id);
+  assert.ok(!ben.state.players.some((p) => p.id === ann.id));
+  assert.ok(!ben.positions.some(([id]) => id === ann.id));
+
   ann.ws.close();
   ben.ws.close();
   server.close();
@@ -298,6 +383,34 @@ test('abandon_game ends a match so a new player can join', async () => {
 
   ws.close();
   server.close();
+});
+
+test('card swipe only accepts a moderate pace', () => {
+  assert.strictEqual(RULES.judgeSwipe(RULES.SWIPE_MIN_MS - 1), 'too_fast');
+  assert.strictEqual(RULES.judgeSwipe((RULES.SWIPE_MIN_MS + RULES.SWIPE_MAX_MS) / 2), 'ok');
+  assert.strictEqual(RULES.judgeSwipe(RULES.SWIPE_MAX_MS + 1), 'too_slow');
+});
+
+test('wires must match colors and follow the panel order', () => {
+  const { left, right, sequence } = RULES.wirePuzzle();
+  for (const list of [left, right, sequence]) assert.deepStrictEqual([...list].sort(), [...RULES.WIRE_COLORS].sort());
+  const [first, second] = sequence;
+  assert.strictEqual(RULES.checkWire(sequence, 0, first, second), 'wrong_color');
+  assert.strictEqual(RULES.checkWire(sequence, 0, second, second), 'wrong_order');
+  assert.strictEqual(RULES.checkWire(sequence, 0, first, first), 'ok');
+  assert.strictEqual(RULES.checkWire(sequence, 1, second, second), 'ok');
+});
+
+test('course waypoints are reached in order and straying resets', () => {
+  const W = RULES.COURSE_WAYPOINTS;
+  for (const w of W) assert.ok(w.x >= 0 && w.x <= 1 && w.y >= 0 && w.y <= 1);
+
+  assert.deepStrictEqual(RULES.courseStep(0, W[2]), { index: 0, status: 'off_course' }, 'skipped a waypoint');
+  const mid = { x: (W[0].x + W[1].x) / 2, y: (W[0].y + W[1].y) / 2 };
+  assert.deepStrictEqual(RULES.courseStep(0, mid), { index: 0, status: 'moving' });
+  assert.deepStrictEqual(RULES.courseStep(0, W[1]), { index: 1, status: 'advanced' });
+  assert.strictEqual(RULES.courseStep(0, { x: mid.x + 0.2, y: mid.y }).status, 'off_course');
+  assert.deepStrictEqual(RULES.courseStep(W.length - 2, W[W.length - 1]), { index: W.length - 1, status: 'done' });
 });
 
 test('join addresses become the right websocket URL', () => {

@@ -104,6 +104,28 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-radius: 
 .task-modal { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 420px; background: var(--panel); border: 2px solid #ffd54f; border-radius: 16px; padding: 22px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6); }
 .task-modal h3 { margin: 0; }
 .big-bar { height: 16px; border-radius: 8px; }
+#task-layer { position: absolute; inset: 0; pointer-events: none; }
+#task-layer.active { pointer-events: auto; background: rgba(5, 7, 15, 0.45); }
+.minigame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 500px; background: var(--panel); border: 2px solid #ffd54f; border-radius: 16px; padding: 22px; display: flex; flex-direction: column; gap: 12px; align-items: center; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6); user-select: none; }
+.minigame h3 { margin: 0; align-self: flex-start; }
+.mg-body { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.mg-canvas { display: block; border-radius: 10px; touch-action: none; }
+.mg-status { min-height: 20px; font-weight: 600; color: var(--muted); text-align: center; }
+.mg-status.ok { color: var(--accent); }
+.mg-status.bad { color: var(--danger); }
+.swipe-track { position: relative; width: 440px; height: 110px; background: #161c30; border-radius: 12px; overflow: hidden; }
+.swipe-slot { position: absolute; left: 30px; right: 10px; top: 46px; height: 18px; background: #0b0f1a; border-radius: 9px; display: flex; justify-content: space-between; padding: 0 14px; font-size: 10px; letter-spacing: 2px; color: var(--muted); align-items: center; }
+.swipe-card { position: absolute; left: 0; top: 22px; width: 96px; height: 66px; border-radius: 8px; background: linear-gradient(135deg, #e8ecf8, #9aa7d1); color: #0b0f1a; display: flex; flex-direction: column; justify-content: center; padding-left: 12px; cursor: grab; touch-action: none; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); }
+.swipe-card:active { cursor: grabbing; }
+.swipe-card b { font-size: 20px; }
+.swipe-card span { font-size: 10px; letter-spacing: 2px; }
+.swipe-light { width: 14px; height: 14px; border-radius: 50%; background: #3d4670; }
+.swipe-light.ok { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.swipe-light.bad { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
+.wire-order { display: flex; gap: 8px; }
+.wire-chip { width: 34px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #0b0f1a; opacity: 0.55; }
+.wire-chip.next { opacity: 1; outline: 2px solid #e8ecf8; }
+.wire-chip.done { opacity: 0.25; text-decoration: line-through; }
 .center { min-height: 100%; display: flex; align-items: center; justify-content: center; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; max-width: 760px; width: 100%; }
 .muted { color: var(--muted); }

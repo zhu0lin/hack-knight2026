@@ -3,7 +3,8 @@ import { connect } from './net.js';
 import { gameSocketUrl } from '../socket-url.js';
 import * as sound from './sound.js';
 import { createMapView } from './map-view.js';
-import { roomAt } from '../shared/map.js';
+import { isMinigame, mountMinigame } from './minigames.js';
+import { roomAt, TASKS } from '../shared/map.js';
 
 const HOLD_TASK_MS = 2500;
 const CALM_TASK_MS = 6000;
@@ -24,6 +25,7 @@ const ui = {
   state: null,
   clockOffset: 0,
   activeTask: null,
+  minigame: null,
   history: new Map(),
   lastPhase: null,
   map: null,
@@ -209,7 +211,7 @@ function recordHistory(state) {
 }
 
 function onPhaseChange(prev, phase) {
-  ui.activeTask = null;
+  clearActiveTask();
   if (phase === 'roles') sound.roleReveal();
   if (phase === 'discussion') sound.alarm();
   if (phase === 'gameover') sound.fanfare();
@@ -223,6 +225,7 @@ function handleEvent(event) {
       toast(event.text, 'danger');
       break;
     case 'kill':
+      clearActiveTask();
       sound.thud();
       toast('You were eliminated. You are a ghost now: you can drift through walls and watch.', 'danger');
       break;
@@ -242,9 +245,17 @@ function handleEvent(event) {
 
 // ---- tasks ------------------------------------------------------------------
 
-function startTask(task) {
+function startTask(assigned) {
   if (ui.activeTask) return;
-  if (task.kind === 'calm') {
+  // The server's task copy may come from an older map; the client's map decides how a task is played.
+  const task = { ...assigned, ...(TASKS.find((t) => t.id === assigned.id) || {}) };
+  if (isMinigame(task.kind)) {
+    const layer = $('#task-layer');
+    if (!layer) return;
+    ui.activeTask = { id: task.id, kind: task.kind };
+    layer.classList.add('active');
+    ui.minigame = mountMinigame(layer, task, { onComplete: () => finishTask(task.id) });
+  } else if (task.kind === 'calm') {
     if (!ui.myVitals || !ui.myVitals.locked) {
       toast('Finish calibrating your resting pulse first.', 'warn');
       return;
@@ -268,15 +279,25 @@ function progressCalmTask(v) {
   else render();
 }
 
+function clearActiveTask() {
+  ui.activeTask = null;
+  if (ui.minigame) {
+    ui.minigame.destroy();
+    ui.minigame = null;
+  }
+  const layer = $('#task-layer');
+  if (layer) layer.classList.remove('active');
+}
+
 function cancelTask() {
   if (!ui.activeTask) return;
-  ui.activeTask = null;
+  clearActiveTask();
   render();
 }
 
 function finishTask(taskId) {
   if (!ui.activeTask || ui.activeTask.id !== taskId) return;
-  ui.activeTask = null;
+  clearActiveTask();
   ui.net.send('complete_task', { taskId });
   sound.blip();
   render();
@@ -313,7 +334,7 @@ function render() {
 function renderMap() {
   if (!ui.map) {
     main.classList.add('map-mode');
-    main.innerHTML = '<div class="map-stage"><canvas id="map-canvas"></canvas><div id="hud"></div></div>';
+    main.innerHTML = '<div class="map-stage"><canvas id="map-canvas"></canvas><div id="hud"></div><div id="task-layer"></div></div>';
     ui.map = createMapView($('#map-canvas'), {
       send: (type, payload) => ui.net.send(type, payload),
       now,
@@ -328,6 +349,7 @@ function renderMap() {
 
 function unmountMap() {
   if (!ui.map) return;
+  clearActiveTask();
   ui.map.destroy();
   ui.map = null;
   main.classList.remove('map-mode');
@@ -463,7 +485,7 @@ function rolesView() {
         <div class="role-sub">You are</div>
         <div class="role-name">${impostor ? 'THE IMPOSTOR' : 'CREW'}</div>
         <p>${impostor
-          ? 'Eliminate the crew without getting caught. In meetings you can fake calm vitals once. Keep your heart steady.'
+          ? 'Eliminate the crew without getting caught. Press V at a vent to travel unseen. In meetings you can fake calm vitals once. Keep your heart steady.'
           : 'Finish your tasks and find the impostor. Watch for pulse spikes when someone is accused.'}</p>
       </div>
     </div>`;
@@ -480,7 +502,7 @@ function hostSkip(label) {
 
 function taskModal() {
   const t = ui.activeTask;
-  if (!t) return '';
+  if (!t || isMinigame(t.kind)) return '';
   const task = ui.state.me.tasks.find((x) => x.id === t.id);
   if (!task) return '';
   const pct = Math.round(taskProgress(task) * 100);
@@ -512,7 +534,9 @@ function hudView() {
       ${!me.alive ? '<div class="ghost-note">You are a ghost. Drift around and watch.</div>' : ''}
     </div>
     ${room ? `<div class="hud-room">${esc(room)}</div>` : ''}
-    <div class="hud-keys">WASD move &middot; E use &middot; R report${impostor ? ' &middot; Q eliminate' : ''}</div>
+    <div class="hud-keys">${me.ventId
+      ? 'A/D switch vent &middot; V climb out'
+      : `WASD move &middot; E use &middot; R report${impostor ? ' &middot; Q eliminate &middot; V vent' : ''}`}</div>
     ${taskModal()}`;
 }
 
