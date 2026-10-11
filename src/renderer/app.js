@@ -660,7 +660,7 @@ async function boot() {
   };
 
   setInterval(sendVitals, 1000);
-  setInterval(sendFaceSnapshot, 1500);
+  setInterval(sendFaceSnapshot, 33);
   setInterval(() => {
     if (ui.map) renderMap();
   }, 150);
