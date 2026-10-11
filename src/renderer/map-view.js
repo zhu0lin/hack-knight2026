@@ -60,6 +60,8 @@ function drawBean(ctx, x, y, color, { alpha = 1, lying = false } = {}) {
 export function createMapView(canvas, hooks) {
   const ctx = canvas.getContext('2d');
   const keys = new Set();
+  let emergencyHoldStart = null;
+  const EMERGENCY_HOLD_MS = 1300;
   const others = new Map();
   let state = null;
   let me = null;
@@ -151,7 +153,14 @@ export function createMapView(canvas, hooks) {
     const parts = [];
     const task = nearestTask();
     if (task) parts.push(`[E] ${task.label}`);
-    else if (nearButton()) parts.push('[E] Emergency meeting');
+    else if (nearButton()) {
+      if (emergencyHoldStart !== null) {
+        const pct = Math.min(100, Math.round(((performance.now() - emergencyHoldStart) / EMERGENCY_HOLD_MS) * 100));
+        parts.push(`[E] Emergency meeting (holding ${pct}%)`);
+      } else {
+        parts.push('[E] Emergency meeting');
+      }
+    }
     const body = nearestBody();
     if (body) parts.push('[R] Report body');
     if (enterableVent()) parts.push('[V] Vent');
@@ -183,7 +192,7 @@ export function createMapView(canvas, hooks) {
     if (k === 'e') {
       const task = nearestTask();
       if (task) hooks.useTask(task);
-      else if (nearButton()) hooks.send('call_meeting');
+      else if (nearButton() && emergencyHoldStart === null) emergencyHoldStart = performance.now();
     } else if (k === 'r') {
       const body = nearestBody();
       if (body) hooks.send('report', { bodyId: body.id });
@@ -202,9 +211,10 @@ export function createMapView(canvas, hooks) {
 
   function onKeyUp(e) {
     keys.delete(e.key.toLowerCase());
+    if (e.key.toLowerCase() === 'e') emergencyHoldStart = null;
   }
 
-  function onBlur() { keys.clear(); }
+  function onBlur() { keys.clear(); emergencyHoldStart = null; }
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
@@ -216,6 +226,14 @@ export function createMapView(canvas, hooks) {
     for (const o of others.values()) {
       o.x += (o.tx - o.x) * Math.min(1, dt * 12);
       o.y += (o.ty - o.y) * Math.min(1, dt * 12);
+    }
+    if (emergencyHoldStart !== null) {
+      if (!nearButton() || !canAct()) {
+        emergencyHoldStart = null;
+      } else if (performance.now() - emergencyHoldStart >= EMERGENCY_HOLD_MS) {
+        hooks.send('call_meeting');
+        emergencyHoldStart = null;
+      }
     }
     if (!me || !state || hooks.isBusy() || myVent()) return;
     let dx = 0;

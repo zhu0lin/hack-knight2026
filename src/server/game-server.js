@@ -9,8 +9,8 @@ const DEFAULT_CONFIG = {
   minPlayers: 3,
   tasksPerPlayer: 3,
   taskPhaseMs: 150_000,
-  discussionMs: 60_000,
-  votingMs: 30_000,
+  discussionMs: 45_000,
+  votingMs: 20_000,
   revealMs: 7_000,
   roleRevealMs: 5_000,
   killCooldownMs: 25_000,
@@ -19,6 +19,9 @@ const DEFAULT_CONFIG = {
   vitalsStaleMs: 15_000,
   botTaskMinMs: 5_000,
   botTaskMaxMs: 11_000,
+  maxEmergencyMeetings: 1,
+  meetingCooldownMs: 28_000,
+  spotlightLockMs: 9_000,
 };
 
 const TICK_MS = 66;
@@ -56,6 +59,8 @@ class Game {
     this.phaseEndsAt = null;
     this.meetingNumber = 0;
     this.meetingCaller = null;
+    this.meetingReadyAt = 0;
+    this.meetingKind = null;
     this.spotlight = null;
     this.lastEjection = null;
     this.winner = null;
@@ -106,6 +111,7 @@ class Game {
     Object.assign(p, {
       role: null, alive: true, tasks: [], vote: null, killReadyAt: 0,
       fakeUntil: 0, fakeBpm: null, fakeUsedInMeeting: -1, spiking: false, ventId: null,
+      emergencyMeetingsUsed: 0, readyToVote: false,
     });
     if (p.isBot) p.nav = { path: [], workingOn: null, workUntil: 0 };
   }
@@ -220,17 +226,23 @@ class Game {
   displayedVitals(p, now = this.clock()) {
     const v = p.vitals;
     if (!v.at || now - v.at > this.config.vitalsStaleMs) {
-      return { bpm: null, baseline: v.baseline, delta: null, spike: false, locked: v.locked, hint: 'No signal' };
+      return { bpm: null, baseline: v.baseline, delta: null, deltaSinceAccusation: null, spike: false, locked: v.locked, hint: 'No signal' };
     }
     let bpm = v.bpm;
     if (p.fakeUntil > now && p.fakeBpm !== null) {
       bpm = p.fakeBpm + Math.round((Math.random() - 0.5) * 3);
     }
     const delta = bpm !== null && v.baseline !== null ? bpm - v.baseline : null;
+    const spot = this.spotlight;
+    const deltaSinceAccusation =
+      spot && spot.targetId === p.id && spot.bpmAtAccusation != null && bpm !== null
+        ? bpm - spot.bpmAtAccusation
+        : null;
     return {
       bpm,
       baseline: v.baseline,
       delta,
+      deltaSinceAccusation,
       spike: v.locked && delta !== null && delta >= this.config.spikeBpm,
       locked: v.locked,
       hint: v.hint,
@@ -295,28 +307,34 @@ class Game {
   callMeeting(id) {
     const p = this.players.get(id);
     if (this.phase !== 'tasks' || !p || !p.alive || p.ventId) return;
+    if (this.clock() < this.meetingReadyAt) return;
+    if (p.emergencyMeetingsUsed >= this.config.maxEmergencyMeetings) return;
     if (MAP.distance(p, MAP.EMERGENCY_BUTTON) > MAP.BUTTON_RANGE + RANGE_SLACK) return;
-    this.startMeeting(`${p.name} pressed the emergency button`);
+    p.emergencyMeetingsUsed += 1;
+    this.startMeeting(`${p.name} pressed the emergency button`, 'button');
   }
 
   report(id, bodyId) {
     const p = this.players.get(id);
     const body = this.bodies.find((b) => b.id === bodyId);
     if (this.phase !== 'tasks' || !p || !p.alive || p.ventId || !body) return;
+    if (this.clock() < this.meetingReadyAt) return;
     if (MAP.distance(p, body) > MAP.REPORT_RANGE + RANGE_SLACK) return;
     const victim = this.players.get(body.playerId);
-    this.startMeeting(`${p.name} found ${victim ? victim.name : 'someone'}'s body`);
+    this.startMeeting(`${p.name} found ${victim ? victim.name : 'someone'}'s body`, 'body');
   }
 
-  startMeeting(reason) {
+  startMeeting(reason, kind) {
     this.meetingNumber += 1;
     this.meetingCaller = reason;
+    this.meetingKind = kind;
     this.spotlight = null;
     this.bodies = [];
     for (const p of this.players.values()) {
       p.vote = null;
       p.spiking = false;
       p.ventId = null;
+      p.readyToVote = false;
     }
     this.setPhase('discussion', this.config.discussionMs);
     this.emit({ type: 'meeting', text: reason });
@@ -327,7 +345,12 @@ class Game {
     const target = this.players.get(targetId);
     if (!by || !target || !by.alive || !target.alive) return;
     if (this.phase !== 'discussion' && this.phase !== 'voting') return;
-    this.spotlight = { targetId, byId: id, at: this.clock() };
+    if (this.spotlight && this.spotlight.targetId !== targetId &&
+        this.clock() - this.spotlight.at < this.config.spotlightLockMs) return;
+    this.spotlight = {
+      targetId, byId: id, at: this.clock(),
+      bpmAtAccusation: this.displayedVitals(target, this.clock()).bpm,
+    };
     this.emit({ type: 'accuse', targetId, text: `${by.name} accuses ${target.name}! Watch their pulse...` });
   }
 
@@ -352,6 +375,14 @@ class Game {
     p.vote = targetId;
     this.emit({ type: 'vote', text: `${p.name} voted` });
     if (this.alive().every((q) => q.vote !== null)) this.tallyVotes();
+  }
+
+  readyToVote(id) {
+    const p = this.players.get(id);
+    if (!p || !p.alive || this.phase !== 'discussion' || p.readyToVote) return;
+    p.readyToVote = true;
+    this.emit({ type: 'ready_vote', text: `${p.name} is ready to vote` });
+    if (this.alive().every((q) => q.readyToVote)) this.advance();
   }
 
   tallyVotes() {
@@ -393,9 +424,10 @@ class Game {
     switch (this.phase) {
       case 'roles':
         this.setPhase('tasks', this.config.taskPhaseMs);
+        this.meetingReadyAt = this.clock() + this.config.meetingCooldownMs;
         break;
       case 'tasks':
-        this.startMeeting('The shift timer ran out');
+        this.startMeeting('The shift timer ran out', 'timeout');
         break;
       case 'discussion':
         this.setPhase('voting', this.config.votingMs);
@@ -411,6 +443,7 @@ class Game {
           }
           this.resetPositions();
           this.setPhase('tasks', this.config.taskPhaseMs);
+          this.meetingReadyAt = this.clock() + this.config.meetingCooldownMs;
         }
         break;
       default:
@@ -584,6 +617,7 @@ class Game {
       isHost: p.id === this.hostId,
       role: revealRoles || ejected ? p.role : null,
       voted: p.vote !== null,
+      readyToVote: p.readyToVote,
       x: Math.round(p.x),
       y: Math.round(p.y),
       vitals: this.displayedVitals(p, now),
@@ -599,6 +633,7 @@ class Game {
       hostId: this.hostId,
       meetingNumber: this.meetingNumber,
       meetingCaller: this.meetingCaller,
+      meetingKind: this.meetingKind,
       spotlight: this.spotlight,
       lastEjection: this.phase === 'reveal' || this.phase === 'gameover' ? this.lastEjection : null,
       winner: this.winner,
@@ -616,6 +651,7 @@ class Game {
         alive: me.alive,
         tasks: me.tasks,
         vote: me.vote,
+        readyToVote: me.readyToVote,
         killReadyAt: me.role === 'impostor' ? me.killReadyAt : null,
         fakeAvailable: me.role === 'impostor' && me.fakeUsedInMeeting !== this.meetingNumber,
         fakeUntil: me.role === 'impostor' ? me.fakeUntil : 0,
@@ -716,6 +752,7 @@ function createGameServer({ port = 7777, config = {}, log = console.log } = {}) 
           case 'accuse': game.accuse(playerId, msg.targetId); break;
           case 'fake_vitals': game.fakeVitals(playerId); break;
           case 'vote': game.vote(playerId, msg.targetId); break;
+          case 'ready_vote': game.readyToVote(playerId); break;
           case 'skip_phase': game.skipPhase(playerId); break;
           case 'play_again': game.playAgain(playerId); break;
           default:

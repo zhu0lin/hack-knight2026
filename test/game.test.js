@@ -18,8 +18,8 @@ function place(player, x, y) {
   player.y = y;
 }
 
-function startedGame() {
-  const game = new Game({});
+function startedGame(config = {}, clock = Date.now) {
+  const game = new Game({ meetingCooldownMs: 0, ...config }, clock);
   const a = game.addPlayer({ clientId: 'a', name: 'Ann' });
   const b = game.addPlayer({ clientId: 'b', name: 'Ben' });
   const c = game.addPlayer({ clientId: 'c', name: 'Cat' });
@@ -94,7 +94,7 @@ test('emergency button only works in range', () => {
 });
 
 test('kills need range and cooldown, leave a body that can be reported', () => {
-  const game = new Game({});
+  const game = new Game({ meetingCooldownMs: 0 });
   const players = ['Ann', 'Ben', 'Cat', 'Dan'].map((n) => game.addPlayer({ clientId: n, name: n }));
   game.start(players[0].id);
   game.advance();
@@ -252,7 +252,7 @@ test('tied vote ejects nobody', () => {
 test('bots walk the map, do tasks, and play a full game to completion', () => {
   let t = Date.now();
   const game = new Game(
-    { taskPhaseMs: 60_000, discussionMs: 2000, votingMs: 2000, revealMs: 1000, roleRevealMs: 1000, killCooldownMs: 5000, botTaskMinMs: 1000, botTaskMaxMs: 1000 },
+    { taskPhaseMs: 60_000, discussionMs: 2000, votingMs: 2000, revealMs: 1000, roleRevealMs: 1000, killCooldownMs: 5000, botTaskMinMs: 1000, botTaskMaxMs: 1000, meetingCooldownMs: 0 },
     () => t,
   );
   const host = game.addPlayer({ clientId: 'h', name: 'Host' });
@@ -528,6 +528,113 @@ test('course waypoints are reached in order and straying resets', () => {
   assert.deepStrictEqual(RULES.courseStep(0, W[1]), { index: 1, status: 'advanced' });
   assert.strictEqual(RULES.courseStep(0, { x: mid.x + 0.2, y: mid.y }).status, 'off_course');
   assert.deepStrictEqual(RULES.courseStep(W.length - 2, W[W.length - 1]), { index: W.length - 1, status: 'done' });
+});
+
+test('emergency meeting is capped at one per player; a different player still has theirs', () => {
+  const { game, a, b } = startedGame();
+  pressButton(game, a);
+  assert.strictEqual(game.phase, 'discussion');
+  game.advance(); // voting
+  for (const p of game.alive()) game.vote(p.id, 'skip');
+  assert.strictEqual(game.phase, 'reveal');
+  game.advance(); // back to tasks
+  assert.strictEqual(game.phase, 'tasks');
+  pressButton(game, a);
+  assert.strictEqual(game.phase, 'tasks', 'capped player called a second emergency meeting');
+  pressButton(game, b);
+  assert.strictEqual(game.phase, 'discussion', 'a different player still had their emergency meeting available');
+});
+
+test('report() has no cap, unlike the emergency button', () => {
+  const { game, a } = startedGame();
+  a.emergencyMeetingsUsed = 99;
+  game.bodies.push({ id: 'b1', playerId: a.id, x: a.x, y: a.y });
+  game.report(a.id, 'b1');
+  assert.strictEqual(game.phase, 'discussion');
+});
+
+test('global cooldown blocks meetings (button and report) until it elapses', () => {
+  let t = 1000;
+  const { game, a, b } = startedGame({ meetingCooldownMs: 28_000 }, () => t);
+
+  // blocked right after the shift begins (the 'roles' advance() hook)
+  pressButton(game, a);
+  assert.strictEqual(game.phase, 'tasks', 'meeting allowed during cooldown');
+  game.bodies.push({ id: 'b1', playerId: b.id, x: a.x, y: a.y });
+  game.report(a.id, 'b1');
+  assert.strictEqual(game.phase, 'tasks', 'report allowed during cooldown');
+
+  t += 28_000;
+  pressButton(game, a);
+  assert.strictEqual(game.phase, 'discussion');
+
+  // run a full meeting cycle and confirm the cooldown re-arms (the 'reveal' advance() hook)
+  game.advance(); // voting
+  for (const p of game.alive()) game.vote(p.id, 'skip');
+  assert.strictEqual(game.phase, 'reveal');
+  game.advance(); // back to tasks, meetingReadyAt re-armed
+  assert.strictEqual(game.phase, 'tasks');
+
+  pressButton(game, b);
+  assert.strictEqual(game.phase, 'tasks', 'meeting allowed right after a meeting just ended');
+  t += 28_000;
+  pressButton(game, b);
+  assert.strictEqual(game.phase, 'discussion');
+});
+
+test('spotlight lock blocks switching target, allows re-accusing the same target, unlocks after spotlightLockMs', () => {
+  let t = 1000;
+  const { game, a, b, c } = startedGame({ spotlightLockMs: 9_000 }, () => t);
+  pressButton(game, a);
+  game.accuse(a.id, b.id);
+  assert.strictEqual(game.spotlight.targetId, b.id);
+
+  t += 1000;
+  game.accuse(a.id, c.id);
+  assert.strictEqual(game.spotlight.targetId, b.id, 'switched target during the lock window');
+
+  const atAfterSwitch = game.spotlight.at;
+  game.accuse(a.id, b.id);
+  assert.strictEqual(game.spotlight.targetId, b.id);
+  assert.notStrictEqual(game.spotlight.at, atAfterSwitch, 're-accusing the same target did not refresh it');
+
+  t += 9_000;
+  game.accuse(a.id, c.id);
+  assert.strictEqual(game.spotlight.targetId, c.id, 'switch still blocked after the lock elapsed');
+});
+
+test('deltaSinceAccusation tracks bpm change since the accusation snapshot, null when not spotlighted', () => {
+  const { game, a, b } = startedGame();
+  pressButton(game, a);
+  game.updateVitals(b.id, lockedVitals(80, 70));
+  assert.strictEqual(game.displayedVitals(b).deltaSinceAccusation, null);
+
+  game.accuse(a.id, b.id);
+  assert.strictEqual(game.spotlight.bpmAtAccusation, 80);
+
+  game.updateVitals(b.id, lockedVitals(95, 70));
+  assert.strictEqual(game.displayedVitals(b).deltaSinceAccusation, 15);
+  assert.strictEqual(game.displayedVitals(a).deltaSinceAccusation, null, 'non-spotlighted player should be null');
+});
+
+test('ready-to-vote advances early once every alive player is ready', () => {
+  const { game, a, b, c } = startedGame();
+  pressButton(game, a);
+  assert.strictEqual(game.phase, 'discussion');
+  game.readyToVote(a.id);
+  game.readyToVote(b.id);
+  assert.strictEqual(game.phase, 'discussion', 'advanced with only partial ready');
+  game.readyToVote(c.id);
+  assert.strictEqual(game.phase, 'voting', 'did not advance once everyone was ready');
+});
+
+test('timer fallback still transitions discussion to voting when not everyone is ready', () => {
+  const { game, a } = startedGame();
+  pressButton(game, a);
+  game.readyToVote(a.id);
+  assert.strictEqual(game.phase, 'discussion');
+  game.advance(); // simulate the phase timer firing
+  assert.strictEqual(game.phase, 'voting');
 });
 
 test('join addresses become the right websocket URL', () => {

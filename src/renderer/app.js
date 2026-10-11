@@ -552,6 +552,7 @@ function vitalsCard(p, s) {
   const v = p.vitals;
   const spot = s.spotlight && s.spotlight.targetId === p.id;
   const deltaText = v.delta === null ? (v.locked ? '' : 'not calibrated') : `${v.delta > 0 ? '+' : ''}${v.delta} vs resting`;
+  const accusedDeltaText = v.deltaSinceAccusation === null ? null : `${v.deltaSinceAccusation > 0 ? '+' : ''}${v.deltaSinceAccusation} since accused`;
   const voting = s.phase === 'voting';
   const canAct = me.alive && p.alive;
   const face = faceCamUrl(p.id);
@@ -568,6 +569,7 @@ function vitalsCard(p, s) {
       ${p.alive ? `
         <div class="vc-bpm"><span class="heart" style="${heartStyle(v.bpm)}">&#9829;</span>${v.bpm ?? '--'}<span class="unit">BPM</span></div>
         <div class="vc-delta ${v.spike ? 'bad' : ''}">${esc(deltaText)}</div>
+        ${accusedDeltaText !== null ? `<div class="vc-delta-accused">${esc(accusedDeltaText)}</div>` : ''}
         ${sparkline(p.id, v.spike ? '#ff4d6d' : p.color)}
         <div class="vc-actions">
           ${canAct && p.id !== me.id ? `<button class="btn small ghost" data-accuse="${p.id}">Accuse</button>` : ''}
@@ -576,22 +578,38 @@ function vitalsCard(p, s) {
     </div>`;
 }
 
+const MEETING_KIND_META = {
+  button: { icon: '&#128680;', label: 'Emergency Meeting' },
+  body: { icon: '&#128128;', label: 'Body Reported' },
+  timeout: { icon: '&#9200;', label: 'Shift Ended' },
+};
+
 function meetingView() {
   const s = ui.state;
   const me = s.me;
   const voting = s.phase === 'voting';
   const fakeActive = me.fakeUntil > now();
+  const kindMeta = MEETING_KIND_META[s.meetingKind] || { icon: '&#128226;', label: 'Meeting' };
+  const readyCount = s.players.filter((p) => p.alive && p.readyToVote).length;
+  const aliveCount = s.players.filter((p) => p.alive).length;
   return `
     <div class="meeting">
       <header class="phase-head">
         <h2>${voting ? 'Vote now' : 'Emergency meeting'}</h2>
-        <div class="muted">${esc(s.meetingCaller)} &middot; spike = ${s.config.spikeBpm}+ BPM above resting</div>
+        <div class="meeting-banner">
+          <span class="meeting-icon">${kindMeta.icon}</span>
+          <span class="meeting-label">${esc(kindMeta.label)}</span>
+          <span class="muted">${esc(s.meetingCaller)} &middot; spike = ${s.config.spikeBpm}+ BPM above resting</span>
+        </div>
         ${timerChip()}
       </header>
       <div class="vitals-grid">${s.players.map((p) => vitalsCard(p, s)).join('')}</div>
       <div class="footer-row">
         ${voting && me.alive && me.vote === null ? '<button class="btn" data-vote="skip">Skip vote</button>' : ''}
         ${voting && me.vote !== null ? '<span class="muted">Vote cast. Waiting for others...</span>' : ''}
+        ${!voting && me.alive ? (me.readyToVote
+          ? `<span class="muted">Ready. Waiting for others... (${readyCount}/${aliveCount})</span>`
+          : `<button class="btn" data-action="ready_vote">Ready to vote</button>`) : ''}
         ${me.role === 'impostor' && me.alive ? `<button class="btn impostor-btn" data-action="fake_vitals" ${me.fakeAvailable ? '' : 'disabled'}>${fakeActive ? 'Fake vitals ACTIVE' : me.fakeAvailable ? 'Fake calm vitals (1x)' : 'Fake vitals used'}</button>` : ''}
         ${hostSkip(voting ? 'End voting' : 'Start voting')}
       </div>
