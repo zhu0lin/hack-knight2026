@@ -4,7 +4,8 @@ import {
 } from '../shared/map.js';
 
 const SEND_INTERVAL_MS = 66;
-const VIEW_HEIGHT = 900;
+const VIEW_HEIGHT = 630;
+const FOG_VIEW_HEIGHT = 900; // vision circle's own reference height, so it stays readable regardless of map zoom
 
 const STARS = Array.from({ length: 220 }, () => ({
   x: Math.random() * WORLD.width,
@@ -446,7 +447,7 @@ export function createMapView(canvas, hooks) {
       drawWorld(scale);
       drawActors(vision);
       ctx.restore();
-      if (amAlive()) drawFog(w, h, vision * scale);
+      if (amAlive()) drawFog(w, h, vision * (h / FOG_VIEW_HEIGHT));
       drawVentOverlay(w, h);
       drawTaskArrows(w, h, scale);
       prompt = computePrompt();
