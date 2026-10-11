@@ -53,6 +53,12 @@ html, body {
   padding: 3px 6px; border-radius: 4px; letter-spacing: 1px;
 }
 
+.cam-select-wrap { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.cam-select-wrap select {
+  flex: 1; background: var(--bg); border: 1px solid var(--line); color: var(--text);
+  padding: 6px 8px; border-radius: 8px; font-size: 13px;
+}
+
 .my-vitals { display: flex; flex-direction: column; gap: 10px; }
 .bpm-row { display: flex; align-items: baseline; gap: 8px; }
 .bpm { font-size: 56px; font-weight: 800; font-variant-numeric: tabular-nums; }
@@ -212,10 +218,28 @@ input {
 .vitals-card.spotlight { outline: 3px solid var(--warn); outline-offset: 3px; }
 @keyframes shake { 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
 .spot-tag { position: absolute; top: -12px; right: 12px; background: var(--warn); color: #1b1300; font-weight: 900; font-size: 11px; padding: 3px 8px; border-radius: 4px; letter-spacing: 1px; }
-.vc-head { display: flex; gap: 10px; align-items: center; }
+.face-tile {
+  position: relative; width: 100%; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden;
+  background-size: cover; background-position: center; border: 2px solid var(--line);
+}
+.face-fallback {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 32px; color: #fff; opacity: 0.85;
+}
+.face-caption {
+  position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between;
+  align-items: center; gap: 8px; padding: 6px 10px; background: linear-gradient(transparent, rgba(0,0,0,0.75));
+  font-size: 13px;
+}
+.face-caption .pname { color: #fff; }
+.face-caption .muted { color: rgba(255,255,255,0.75); }
 .vc-bpm { font-size: 44px; font-weight: 800; margin-top: 8px; font-variant-numeric: tabular-nums; display: flex; align-items: center; }
 .vc-delta { color: var(--muted); font-size: 14px; min-height: 18px; }
 .vc-delta.bad { color: var(--danger); font-weight: 800; }
+.vc-delta-accused { color: var(--warn); font-size: 13px; font-weight: 700; }
+.meeting-banner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.meeting-icon { font-size: 22px; }
+.meeting-label { font-weight: 800; letter-spacing: 0.5px; }
 .vc-out { color: var(--muted); margin-top: 12px; }
 .spark { width: 100%; height: 40px; margin-top: 6px; }
 .vc-actions { display: flex; gap: 8px; margin-top: 8px; }

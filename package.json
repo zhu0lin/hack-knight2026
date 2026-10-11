@@ -7,8 +7,8 @@
   "type": "commonjs",
   "scripts": {
     "build": "esbuild src/renderer/app.js --bundle --platform=browser --format=iife --target=chrome130 --outfile=dist/renderer.js",
-    "start": "npm run build && env -u ELECTRON_RUN_AS_NODE electron .",
-    "sim": "npm run build && VV_SIM=1 env -u ELECTRON_RUN_AS_NODE electron .",
+    "start": "npm run build && node scripts/launch-electron.js",
+    "sim": "npm run build && node scripts/launch-electron.js --sim",
     "host": "node src/server/cli.js",
     "test": "node --test test/*.test.js"
   },

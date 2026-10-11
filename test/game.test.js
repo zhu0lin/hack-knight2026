@@ -18,8 +18,8 @@ function place(player, x, y) {
   player.y = y;
 }
 
-function startedGame() {
-  const game = new Game({});
+function startedGame(config = {}, clock = Date.now) {
+  const game = new Game({ meetingCooldownMs: 0, ...config }, clock);
   const a = game.addPlayer({ clientId: 'a', name: 'Ann' });
   const b = game.addPlayer({ clientId: 'b', name: 'Ben' });
   const c = game.addPlayer({ clientId: 'c', name: 'Cat' });
@@ -94,7 +94,7 @@ test('emergency button only works in range', () => {
 });
 
 test('kills need range and cooldown, leave a body that can be reported', () => {
-  const game = new Game({});
+  const game = new Game({ meetingCooldownMs: 0 });
   const players = ['Ann', 'Ben', 'Cat', 'Dan'].map((n) => game.addPlayer({ clientId: n, name: n }));
   game.start(players[0].id);
   game.advance();
@@ -252,7 +252,7 @@ test('tied vote ejects nobody', () => {
 test('bots walk the map, do tasks, and play a full game to completion', () => {
   let t = Date.now();
   const game = new Game(
-    { taskPhaseMs: 60_000, discussionMs: 2000, votingMs: 2000, revealMs: 1000, roleRevealMs: 1000, killCooldownMs: 5000, botTaskMs: 1000 },
+    { taskPhaseMs: 60_000, discussionMs: 2000, votingMs: 2000, revealMs: 1000, roleRevealMs: 1000, killCooldownMs: 5000, botTaskMinMs: 1000, botTaskMaxMs: 1000, meetingCooldownMs: 0 },
     () => t,
   );
   const host = game.addPlayer({ clientId: 'h', name: 'Host' });
@@ -275,6 +275,89 @@ test('bots walk the map, do tasks, and play a full game to completion', () => {
   assert.strictEqual(walls, 0, 'bots walked through walls');
   assert.strictEqual(game.phase, 'gameover');
   assert.ok(['crew', 'impostor'].includes(game.winner.team));
+});
+
+test('kill redistributes a victim\'s unfinished tasks to survivors, unfinished total unchanged', () => {
+  const game = new Game({});
+  const players = ['Ann', 'Ben', 'Cat', 'Dan'].map((n) => game.addPlayer({ clientId: n, name: n }));
+  game.start(players[0].id);
+  game.advance();
+  const impostor = players.find((p) => p.role === 'impostor');
+  const [victim, witness] = players.filter((p) => p.role === 'crew');
+
+  victim.tasks = [
+    { id: 't1', x: 0, y: 0, done: true },
+    { id: 't2', x: 0, y: 0, done: false },
+    { id: 't3', x: 0, y: 0, done: false },
+  ];
+  const before = game.taskProgress();
+
+  place(impostor, 200, 800);
+  place(victim, 250, 800);
+  impostor.killReadyAt = 0;
+  game.kill(impostor.id, victim.id);
+  assert.strictEqual(victim.alive, false);
+
+  assert.deepStrictEqual(victim.tasks, [{ id: 't1', x: 0, y: 0, done: true }]);
+  assert.ok(witness.alive);
+  const survivorTasks = [...game.crewAlive().flatMap((p) => p.tasks)];
+  assert.ok(survivorTasks.some((t) => t.id === 't2'));
+  assert.ok(survivorTasks.some((t) => t.id === 't3'));
+  assert.strictEqual(game.taskProgress(), before);
+});
+
+test('ejection redistributes the ejected crewmate\'s unfinished tasks to survivors', () => {
+  const { game, a, b, c } = startedGame();
+  const crew = [a, b, c].filter((p) => p.role === 'crew');
+  const [victim] = crew;
+  victim.tasks = [
+    { id: 't1', x: 0, y: 0, done: false },
+    { id: 't2', x: 0, y: 0, done: true },
+  ];
+  const before = game.taskProgress();
+
+  pressButton(game, a);
+  game.advance();
+  assert.strictEqual(game.phase, 'voting');
+  for (const p of game.alive()) game.vote(p.id, victim.id);
+  assert.strictEqual(game.phase, 'reveal');
+  assert.strictEqual(victim.alive, false);
+
+  assert.deepStrictEqual(victim.tasks, [{ id: 't2', x: 0, y: 0, done: true }]);
+  const survivorTasks = game.crewAlive().flatMap((p) => p.tasks);
+  assert.ok(survivorTasks.some((t) => t.id === 't1'));
+  assert.strictEqual(game.taskProgress(), before);
+});
+
+test('killing the last crew member does not throw and impostor wins', () => {
+  const game = new Game({});
+  const a = game.addPlayer({ clientId: 'a', name: 'Ann' });
+  const b = game.addPlayer({ clientId: 'b', name: 'Ben' });
+  const c = game.addPlayer({ clientId: 'c', name: 'Cat' });
+  game.start(a.id);
+  game.advance();
+  const impostor = [a, b, c].find((p) => p.role === 'impostor');
+  const crew = [a, b, c].filter((p) => p.role === 'crew');
+  // force second crew member dead already so one kill ends the game
+  crew[1].alive = false;
+  impostor.killReadyAt = 0;
+  place(impostor, crew[0].x + 30, crew[0].y);
+  assert.doesNotThrow(() => game.kill(impostor.id, crew[0].id));
+  assert.strictEqual(game.winner.team, 'impostor');
+});
+
+test('impostor death does not redistribute tasks to crew', () => {
+  const { game, impostor, crew } = startedGame();
+  impostor.tasks = [{ id: 'fake1', x: 0, y: 0, done: false }];
+  const lengthsBefore = crew.map((p) => p.tasks.length);
+
+  pressButton(game, crew[0]);
+  game.advance();
+  for (const p of game.alive()) game.vote(p.id, impostor.id);
+  assert.strictEqual(game.lastEjection.wasImpostor, true);
+
+  const lengthsAfter = crew.map((p) => p.tasks.length);
+  assert.deepStrictEqual(lengthsAfter, lengthsBefore);
 });
 
 test('LAN server relays heart rate and positions between connected clients', async () => {
@@ -349,6 +432,40 @@ test('health check responds ok for Cloud Run', async () => {
   server.close();
 });
 
+test('oversized face_snapshot payloads are rejected and not broadcast', async () => {
+  const port = 17780;
+  const logs = [];
+  const server = createGameServer({ port, log: (line) => logs.push(line) });
+  await server.ready;
+
+  const open = (name) => new Promise((resolve) => {
+    const ws = new WebSocket(`ws://localhost:${port}`);
+    const client = { ws, facecam: null };
+    ws.on('message', (raw) => {
+      const msg = JSON.parse(raw);
+      if (msg.type === 'facecam') client.facecam = msg;
+    });
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ type: 'join', name, clientId: name }));
+      resolve(client);
+    });
+  });
+
+  const ann = await open('Ann');
+  const ben = await open('Ben');
+  await new Promise((r) => setTimeout(r, 100));
+
+  ann.ws.send(JSON.stringify({ type: 'face_snapshot', jpeg: 'x'.repeat(150_001) }));
+  await new Promise((r) => setTimeout(r, 100));
+
+  assert.strictEqual(ben.facecam, null);
+  assert.ok(logs.some((line) => line.includes('rejected oversized face_snapshot')));
+
+  ann.ws.close();
+  ben.ws.close();
+  server.close();
+});
+
 test('abandon_game ends a match so a new player can join', async () => {
   const port = 17779;
   const server = createGameServer({ port, log: () => {} });
@@ -411,6 +528,113 @@ test('course waypoints are reached in order and straying resets', () => {
   assert.deepStrictEqual(RULES.courseStep(0, W[1]), { index: 1, status: 'advanced' });
   assert.strictEqual(RULES.courseStep(0, { x: mid.x + 0.2, y: mid.y }).status, 'off_course');
   assert.deepStrictEqual(RULES.courseStep(W.length - 2, W[W.length - 1]), { index: W.length - 1, status: 'done' });
+});
+
+test('emergency meeting is capped at one per player; a different player still has theirs', () => {
+  const { game, a, b } = startedGame();
+  pressButton(game, a);
+  assert.strictEqual(game.phase, 'discussion');
+  game.advance(); // voting
+  for (const p of game.alive()) game.vote(p.id, 'skip');
+  assert.strictEqual(game.phase, 'reveal');
+  game.advance(); // back to tasks
+  assert.strictEqual(game.phase, 'tasks');
+  pressButton(game, a);
+  assert.strictEqual(game.phase, 'tasks', 'capped player called a second emergency meeting');
+  pressButton(game, b);
+  assert.strictEqual(game.phase, 'discussion', 'a different player still had their emergency meeting available');
+});
+
+test('report() has no cap, unlike the emergency button', () => {
+  const { game, a } = startedGame();
+  a.emergencyMeetingsUsed = 99;
+  game.bodies.push({ id: 'b1', playerId: a.id, x: a.x, y: a.y });
+  game.report(a.id, 'b1');
+  assert.strictEqual(game.phase, 'discussion');
+});
+
+test('global cooldown blocks meetings (button and report) until it elapses', () => {
+  let t = 1000;
+  const { game, a, b } = startedGame({ meetingCooldownMs: 28_000 }, () => t);
+
+  // blocked right after the shift begins (the 'roles' advance() hook)
+  pressButton(game, a);
+  assert.strictEqual(game.phase, 'tasks', 'meeting allowed during cooldown');
+  game.bodies.push({ id: 'b1', playerId: b.id, x: a.x, y: a.y });
+  game.report(a.id, 'b1');
+  assert.strictEqual(game.phase, 'tasks', 'report allowed during cooldown');
+
+  t += 28_000;
+  pressButton(game, a);
+  assert.strictEqual(game.phase, 'discussion');
+
+  // run a full meeting cycle and confirm the cooldown re-arms (the 'reveal' advance() hook)
+  game.advance(); // voting
+  for (const p of game.alive()) game.vote(p.id, 'skip');
+  assert.strictEqual(game.phase, 'reveal');
+  game.advance(); // back to tasks, meetingReadyAt re-armed
+  assert.strictEqual(game.phase, 'tasks');
+
+  pressButton(game, b);
+  assert.strictEqual(game.phase, 'tasks', 'meeting allowed right after a meeting just ended');
+  t += 28_000;
+  pressButton(game, b);
+  assert.strictEqual(game.phase, 'discussion');
+});
+
+test('spotlight lock blocks switching target, allows re-accusing the same target, unlocks after spotlightLockMs', () => {
+  let t = 1000;
+  const { game, a, b, c } = startedGame({ spotlightLockMs: 9_000 }, () => t);
+  pressButton(game, a);
+  game.accuse(a.id, b.id);
+  assert.strictEqual(game.spotlight.targetId, b.id);
+
+  t += 1000;
+  game.accuse(a.id, c.id);
+  assert.strictEqual(game.spotlight.targetId, b.id, 'switched target during the lock window');
+
+  const atAfterSwitch = game.spotlight.at;
+  game.accuse(a.id, b.id);
+  assert.strictEqual(game.spotlight.targetId, b.id);
+  assert.notStrictEqual(game.spotlight.at, atAfterSwitch, 're-accusing the same target did not refresh it');
+
+  t += 9_000;
+  game.accuse(a.id, c.id);
+  assert.strictEqual(game.spotlight.targetId, c.id, 'switch still blocked after the lock elapsed');
+});
+
+test('deltaSinceAccusation tracks bpm change since the accusation snapshot, null when not spotlighted', () => {
+  const { game, a, b } = startedGame();
+  pressButton(game, a);
+  game.updateVitals(b.id, lockedVitals(80, 70));
+  assert.strictEqual(game.displayedVitals(b).deltaSinceAccusation, null);
+
+  game.accuse(a.id, b.id);
+  assert.strictEqual(game.spotlight.bpmAtAccusation, 80);
+
+  game.updateVitals(b.id, lockedVitals(95, 70));
+  assert.strictEqual(game.displayedVitals(b).deltaSinceAccusation, 15);
+  assert.strictEqual(game.displayedVitals(a).deltaSinceAccusation, null, 'non-spotlighted player should be null');
+});
+
+test('ready-to-vote advances early once every alive player is ready', () => {
+  const { game, a, b, c } = startedGame();
+  pressButton(game, a);
+  assert.strictEqual(game.phase, 'discussion');
+  game.readyToVote(a.id);
+  game.readyToVote(b.id);
+  assert.strictEqual(game.phase, 'discussion', 'advanced with only partial ready');
+  game.readyToVote(c.id);
+  assert.strictEqual(game.phase, 'voting', 'did not advance once everyone was ready');
+});
+
+test('timer fallback still transitions discussion to voting when not everyone is ready', () => {
+  const { game, a } = startedGame();
+  pressButton(game, a);
+  game.readyToVote(a.id);
+  assert.strictEqual(game.phase, 'discussion');
+  game.advance(); // simulate the phase timer firing
+  assert.strictEqual(game.phase, 'voting');
 });
 
 test('join addresses become the right websocket URL', () => {

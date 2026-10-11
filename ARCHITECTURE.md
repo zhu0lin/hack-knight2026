@@ -149,7 +149,7 @@ Game state lives in memory in a single process. **Cloud Run must run exactly one
 Bots are server-side players (`isBot: true`), so solo testing and one-laptop demos work.
 - They have simulated vitals that spike when accused; impostor bots spike harder.
 - They walk the waypoint graph in `map.js` (nodes at room centers and corridor junctions, all edges axis-aligned and verified walkable), routing by Dijkstra in `route()`.
-- Crew bots walk to their tasks, work on each for `botTaskMs`, and report bodies within range.
+- Crew bots walk to their tasks, work on each for a random duration between `botTaskMinMs` and `botTaskMaxMs`, and report bodies within range.
 - The impostor bot hunts the nearest crewmate and kills when in range and off cooldown.
 - They vote probabilistically, favoring whoever is in the spotlight.
 
