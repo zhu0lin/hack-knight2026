@@ -196,7 +196,21 @@ input {
 .vitals-card.spotlight { outline: 3px solid var(--warn); outline-offset: 3px; }
 @keyframes shake { 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
 .spot-tag { position: absolute; top: -12px; right: 12px; background: var(--warn); color: #1b1300; font-weight: 900; font-size: 11px; padding: 3px 8px; border-radius: 4px; letter-spacing: 1px; }
-.vc-head { display: flex; gap: 10px; align-items: center; }
+.face-tile {
+  position: relative; width: 100%; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden;
+  background-size: cover; background-position: center; border: 2px solid var(--line);
+}
+.face-fallback {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 32px; color: #fff; opacity: 0.85;
+}
+.face-caption {
+  position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between;
+  align-items: center; gap: 8px; padding: 6px 10px; background: linear-gradient(transparent, rgba(0,0,0,0.75));
+  font-size: 13px;
+}
+.face-caption .pname { color: #fff; }
+.face-caption .muted { color: rgba(255,255,255,0.75); }
 .vc-bpm { font-size: 44px; font-weight: 800; margin-top: 8px; font-variant-numeric: tabular-nums; display: flex; align-items: center; }
 .vc-delta { color: var(--muted); font-size: 14px; min-height: 18px; }
 .vc-delta.bad { color: var(--danger); font-weight: 800; }
